@@ -1,0 +1,25 @@
+version: v1.1.0
+steps:
+  # -------------------------------------------------------------
+  # Step 1: Build the container image in the cloud
+  # -------------------------------------------------------------
+  - id: build-image
+    build: >
+      -t {{.Run.Registry}}/inference-api:{{.Run.ID}}
+      -t {{.Run.Registry}}/inference-api:latest
+      -f Dockerfile .
+
+  # -------------------------------------------------------------
+  # Step 2: Run test suite inside the newly built container
+  # If any test fails, ACR halts and DOES NOT push the image!
+  # -------------------------------------------------------------
+  - id: run-unit-tests
+    cmd: {{.Run.Registry}}/inference-api:{{.Run.ID}} pytest tests/
+
+  # -------------------------------------------------------------
+  # Step 3: Push validated image to the registry
+  # -------------------------------------------------------------
+  - id: push-image
+    push:
+      - {{.Run.Registry}}/inference-api:{{.Run.ID}}
+      - {{.Run.Registry}}/inference-api:latest

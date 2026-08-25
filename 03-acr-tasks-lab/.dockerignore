@@ -1,0 +1,24 @@
+# Git and IDE files
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# Python virtual environment and bytecode cache
+.venv
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local secrets and config
+.env
+*.log
