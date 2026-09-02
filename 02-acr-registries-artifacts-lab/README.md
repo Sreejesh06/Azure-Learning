@@ -67,6 +67,28 @@ Confirm it is sitting safely in the registry.
 az acr repository list --name <your-unique-name> -o table
 ```
 
+### Advanced ACR Features (Exam Focus)
+
+**6. View Image Digests (Manifests)**
+A tag (`v1.0.0`) can easily be overwritten by a mistake, but a digest (SHA-256 hash) is immutable. This is critical for zero-trust security and compliance.
+```bash
+az acr manifest list-metadata --registry <your-unique-name> --name inference-api -o table
+```
+
+**7. Lock a Production Image**
+Prevent accidental deletion or overwriting of a critical image (like a production release).
+```bash
+az acr repository update --name <your-unique-name> --image inference-api:v1.0.0 --write-enabled false
+```
+*To verify the lock is in place, run `az acr repository show` and look for `"writeEnabled": false`.*
+
+**8. Cloud Testing (`az acr run`)**
+*(Note: May fail on Student subscriptions with `TasksOperationsNotAllowed` just like `az acr build` did)*
+Instead of downloading the image to test it, tell Azure to spin it up and run a command inside it!
+```bash
+az acr run --registry <your-unique-name> --cmd "<your-unique-name>.azurecr.io/inference-api:v1.0.0 python -c 'import app'" /dev/null
+```
+
 ---
 
 ## The Commands (Cheat Sheet)
@@ -80,6 +102,9 @@ az acr repository list --name <your-unique-name> -o table
 | `az acr build -r <name> -t <image> .` | **Cloud Build:** Sends code to Azure to build (bypassing local Docker). |
 | `docker build -t <registry-url>/<image> .` | **Local Build:** Builds locally. Must be prefixed with the ACR URL so Docker knows where to route the push. |
 | `az acr repository list -n <name> -o table` | Verifies the container image actually made it into the registry. |
+| `az acr manifest list-metadata` | Gets the exact SHA-256 immutable digest of an image. |
+| `az acr repository update --write-enabled false` | Locks an image to prevent overwriting/deletion. Highly tested on exams. |
+| `az acr run` | Spins up the container inside Azure to run a quick test command. |
 
 ---
 
@@ -113,6 +138,37 @@ The best way to learn is by breaking things. Here is exactly what went wrong dur
 * **When:** Running `docker push`, right at the very end.
 * **Why it happens:** The image built perfectly, but Docker Desktop's internal network gateway (`192.168.65.1`) got confused or blocked by a VPN/Proxy on the host machine. 
 * **The Fix:** Disconnect VPNs or simply restart Docker Desktop on your Mac.
+
+---
+
+## Core Concepts (No Corporate Jargon)
+
+### 1. The Tiers (What are you paying for?)
+* **Basic:** What we used. Dirt cheap. Good for learning and side projects.
+* **Standard:** More storage, faster upload/download speeds. Good for standard production apps.
+* **Premium:** The Enterprise tier. You use this when you need **Geo-replication** (syncing images globally) and **Private Endpoints** (locking down the registry to your private corporate network).
+
+### 2. The 3-Level Hierarchy
+Think of ACR like a digital filing cabinet:
+
+![ACR Registry Hierarchy](https://learn.microsoft.com/en-us/azure/container-registry/media/container-registry-concepts/registry-elements.png)
+
+* **Level 1: The Registry (The Filing Cabinet):** The top-level resource you create (e.g., `acrlab06`). You control who has access to the entire cabinet here.
+* **Level 2: The Repository (The Folders):** Inside the registry, you group similar images into a repository (e.g., `inference-api`). Microsoft highly recommends using "namespaces" (forward slashes) to organize them for different teams, like `production/inference-api` and `ml-team/model-processor`.
+* **Level 3: The Artifact (The Files):** The actual Docker image or Helm Chart sitting inside the repository.
+
+### 3. The Anatomy of an Artifact
+An artifact isn't just one file. It's made of three distinct pieces:
+
+![Dockerfile to Layer IDs](https://learn.microsoft.com/en-us/azure/container-registry/media/container-registry-concepts/container-image-layers.png)
+
+* **Layers (The Building Blocks):** Every line in your `Dockerfile` creates a layer. ACR deduplicates layers to save money. If 5 AI apps use `FROM python:3.11-slim`, Azure only stores it once and shares it across all 5 apps.
+* **Tags (The Sticky Notes):** Human-readable labels like `v1.2.0` or `latest`. **Danger:** Tags are mutable. You can easily accidentally overwrite a good tag with a broken image.
+* **Manifests & Digests (The Immutable Truth):** Azure generates a SHA-256 hash (Digest) for the image blueprint. Digests are mathematically immutable. You cannot fake or overwrite them.
+
+### 4. How to Pull Images
+* **Method 1: Pull by Tag (Good for Dev):** `docker pull acrlab06.azurecr.io/inference-api:v1.2.0`. Easy to read, but risky if someone overwrites the tag.
+* **Method 2: Pull by Digest (Mandatory for Strict Production):** `docker pull acrlab06.azurecr.io/inference-api@sha256:0b83daf54a...`. Zero-trust security. You are guaranteed to get the exact, untouched image that passed your QA testing.
 
 ---
 
