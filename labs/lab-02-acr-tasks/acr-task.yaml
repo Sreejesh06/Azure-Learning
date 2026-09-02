@@ -14,7 +14,7 @@ steps:
   # If any test fails, ACR halts and DOES NOT push the image!
   # -------------------------------------------------------------
   - id: run-unit-tests
-    cmd: {{.Run.Registry}}/inference-api:{{.Run.ID}} pytest tests/
+    cmd: {{.Run.Registry}}/inference-api:{{.Run.ID}} python -m pytest tests/
 
   # -------------------------------------------------------------
   # Step 3: Push validated image to the registry
