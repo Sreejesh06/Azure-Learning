@@ -1,0 +1,9 @@
+{
+  "title": "03 - Container Deployment",
+  "pages": [
+    "index",
+    "01-deployment-methods",
+    "02-runtime-and-settings",
+    "03-observability-and-troubleshooting"
+  ]
+}

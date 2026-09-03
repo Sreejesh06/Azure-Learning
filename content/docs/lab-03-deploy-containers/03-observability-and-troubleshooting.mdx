@@ -1,0 +1,187 @@
+---
+title: 03 - Observability & Troubleshooting
+description: Master container logging, real-time log streaming, Kudu (SCM) diagnostic console, interactive SSH access, Log Analytics (KQL), and production troubleshooting gotchas.
+---
+
+## Observing & Troubleshooting Containerized Apps
+
+When a containerized app fails to start, returns 404 errors, or crashes under load, Azure App Service provides 5 diagnostic layers to inspect and resolve issues.
+
+> [!IMPORTANT]
+> **Understanding Dual-Container Architecture (Kudu SCM vs App Container)**  
+> Azure App Service runs **two separate containers**:
+> 1. **Kudu SCM Sidecar Container (`kudu_ssh_user`)**: Azure's internal management container running deployment scripts, log streaming, and SCM diagnostics. (This is what opens when you run Kudu Debug Console).
+> 2. **Your Application Container**: Your custom Docker image running Gunicorn/Python on port `WEBSITES_PORT`. (Access this via **SSH** in Azure Portal or `az webapp ssh`).
+
+---
+
+## 1. Container Logging & Real-time Log Streaming
+
+App Service captures stdout and stderr streams emitted by your container (such as Gunicorn startup logs, Python stack traces, and framework diagnostics).
+
+### Enabling Container Logging:
+* **Azure CLI**:
+  ```bash
+  az webapp log config \
+    -g container-learning \
+    -n inference-api-test \
+    --docker-container-logging filesystem
+  ```
+* **Azure Portal GUI**:
+  Navigate to **Web App** -> **App Service logs** -> Set **Container logging** to `Filesystem` (Quota: 35 MB, Retention: 1–9 days).
+
+### Streaming Live Logs in Real Time:
+* **Azure CLI**:
+  ```bash
+  az webapp log tail -g container-learning -n inference-api-test
+  ```
+* **Azure Portal GUI**:
+  Navigate to **Web App** -> **Log stream** under Monitoring.
+
+---
+
+## 2. Kudu (SCM) Diagnostic Console
+
+Kudu runs as a sidecar management site accessible at:  
+`https://<app-name>.scm.azurewebsites.net`
+
+### Key Kudu Features:
+1. **Environment Viewer (`/Env`)**: Inspects every active environment variable injected into the Web App host.
+2. **File Explorer (`/home/LogFiles`)**: Browse log files saved on persistent storage.
+3. **Diagnostic Dump**: Download a zip file containing raw container logs, deployment logs, and system configuration.
+
+*GUI Path*: Azure Portal -> **Web App** -> **Advanced Tools** -> **Go**.
+
+---
+
+## 3. Azure Monitor & Log Analytics Integration
+
+For long-term retention and Kusto (KQL) querying across scaled instances:
+
+### Enabling Diagnostic Settings via CLI:
+```bash
+resourceId=$(az webapp show -g container-learning -n inference-api-test --query id -o tsv)
+workspaceId=$(az monitor log-analytics workspace show -g container-learning -n myWorkspace --query id -o tsv)
+
+az monitor diagnostic-settings create \
+  --resource "$resourceId" \
+  --name appServiceDiagnostics \
+  --workspace "$workspaceId" \
+  --logs '[{"category":"AppServiceConsoleLogs","enabled":true},{"category":"AppServiceHTTPLogs","enabled":true}]'
+```
+
+### Querying Logs with Kusto (KQL):
+```kusto
+AppServiceConsoleLogs
+| where Level == "Error"
+| where TimeGenerated > ago(1h)
+| project TimeGenerated, ResultDescription
+| order by TimeGenerated desc
+```
+
+---
+
+## 4. Interactive SSH Shell into Running Containers
+
+To inspect running processes or check internal file paths inside the container:
+
+### Container Prerequisites:
+1. Install `openssh-server` in Dockerfile.
+2. Listen on port `2222`.
+3. Set root password to `Docker!` (required by Azure App Service).
+
+```dockerfile
+RUN apt-get update && apt-get install -y openssh-server \
+    && echo "root:Docker!" | chpasswd
+COPY sshd_config /etc/ssh/
+EXPOSE 8000 2222
+CMD ["/bin/bash", "-c", "service ssh start && gunicorn app:application"]
+```
+
+### Connecting via CLI & Portal:
+* **Azure CLI**: `az webapp ssh -g container-learning -n inference-api-test`
+* **Azure Portal GUI**: Navigate to **Web App** -> **SSH** under Development Tools.
+
+---
+
+## Must-Know Production Gotchas & Pro-Tips
+
+### 1. Extending Container Startup Timeouts (`WEBSITES_CONTAINER_START_TIME_LIMIT`)
+Large Python/ML container images or apps performing heavy initialization can take over 3 minutes to boot. By default, Azure kills any container that doesn't respond to HTTP pings within **230 seconds (3.8 minutes)** with the error: `Container did not respond to HTTP ping on port 8000, site stopped`.
+
+**The Fix:** Increase startup timeout limit up to 1800 seconds (30 minutes):
+```bash
+az webapp config appsettings set \
+  -g container-learning \
+  -n inference-api-test \
+  --settings WEBSITES_CONTAINER_START_TIME_LIMIT=600
+```
+
+---
+
+### 2. Key Log Files in Kudu (`/home/LogFiles/docker/`)
+When inspecting logs inside Kudu or downloading a diagnostic dump:
+* `*_docker.log`: **Platform-level logs** (Docker pull events, image extraction progress, and Azure container lifecycle errors).
+* `*_default_docker.log`: **Application-level logs** (stdout/stderr emitted directly by your Gunicorn or Python process).
+
+---
+
+### 3. Debugging ACR Task Build Failures
+When building container images in the cloud using ACR Tasks (`az acr build`):
+```bash
+# List recent ACR task runs
+az acr task list-runs --registry acrlab06 --output table
+
+# View build logs for a specific run ID
+az acr task logs --registry acrlab06 --run-id <RUN_ID>
+```
+
+---
+
+### 4. Multi-Container Apps (Docker Compose on App Service)
+App Service allows deploying multi-container microservices using `docker-compose.yml` (e.g. Web App + Redis + Worker):
+
+```bash
+az webapp create \
+  -g container-learning \
+  -p inference-plan \
+  -n multi-app-test \
+  --multicontainer-config-type compose \
+  --multicontainer-config-file docker-compose.yml
+```
+
+---
+
+## Practical Troubleshooting Gotchas (Symptom -> Cause -> Fix)
+
+### Gotcha 1: Container Fails to Start (Container Crashed on Boot)
+- **Symptom**: Web App returns HTTP 502 / 503 Bad Gateway, or `log tail` shows infinite container restart loop.
+- **Why it happened**: Missing required environment variable, syntax error in startup script, or missing Python package.
+- **The Fix**:
+  1. Stream logs: `az webapp log tail -g container-learning -n inference-api-test`
+  2. Test container locally: `docker run -e REQUIRED_VAR=test acrlab06.azurecr.io/inference-api:latest`
+  3. Verify app settings in Kudu: `https://<app-name>.scm.azurewebsites.net/Env`
+
+### Gotcha 2: 404 Not Found Response After Successful Deployment
+- **Symptom**: Web App status says `Running`, but accessing `https://inference-api-test.azurewebsites.net` returns `404 Not Found`.
+- **Why it happened**: The container web server is bound to `127.0.0.1` (localhost) instead of `0.0.0.0` (all network interfaces), or `WEBSITES_PORT` does not match the container's listening port.
+- **The Fix**:
+  1. Ensure your server binds to `0.0.0.0`: `gunicorn --bind=0.0.0.0:8000 app:application` (not `127.0.0.1:8000`).
+  2. Set `WEBSITES_PORT=8000` via CLI: `az webapp config appsettings set -g container-learning -n inference-api-test --settings WEBSITES_PORT=8000`
+
+### Gotcha 3: Unauthorized / 403 Image Pull Backoff Failure
+- **Symptom**: Web App log shows `Image pull failed (403 Unauthorized)`.
+- **Why it happened**: Managed Identity was enabled, but `AcrPull` role assignment was not created, or `--acr-use-identity true` was missing.
+- **The Fix**:
+  1. Verify Managed Identity principal ID: `az webapp identity show -g container-learning -n inference-api-test`
+  2. Re-assign `AcrPull` role: `az role assignment create --assignee $PRINCIPAL_ID --scope $ACR_ID --role AcrPull`
+  3. Enable identity pull: `az webapp config set -g container-learning -n inference-api-test --acr-use-identity true --acr-identity [system]`
+
+---
+
+## Additional Resources
+
+* [MS Learn: Quickstart - Run a custom container in Azure](https://learn.microsoft.com/en-us/azure/app-service/quickstart-custom-container)
+* [MS Learn: Enable diagnostic logging for apps in Azure App Service](https://learn.microsoft.com/en-us/azure/app-service/troubleshoot-diagnostic-logs)
+* [MS Learn: Azure App Service diagnostics overview](https://learn.microsoft.com/en-us/azure/app-service/overview-diagnostics)
+* [MS Learn: Configure app settings in Azure App Service](https://learn.microsoft.com/en-us/azure/app-service/configure-common)
