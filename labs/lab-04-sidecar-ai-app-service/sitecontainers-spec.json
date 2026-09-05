@@ -1,0 +1,31 @@
+[
+  {
+    "name": "main-api",
+    "properties": {
+      "image": "acrlab06.azurecr.io/inference-api:latest",
+      "targetPort": "8080",
+      "isMain": true,
+      "environmentVariables": [
+        {
+          "name": "MODEL_ENDPOINT",
+          "value": "MODEL_ENDPOINT_VALUE"
+        }
+      ]
+    }
+  },
+  {
+    "name": "model-server",
+    "properties": {
+      "image": "acrlab06.azurecr.io/model-server:latest",
+      "targetPort": "11434",
+      "isMain": false,
+      "environmentVariables": [
+        {
+          "name": "MODEL_NAME",
+          "value": "MODEL_NAME_VALUE"
+        }
+      ]
+    }
+  }
+]
+

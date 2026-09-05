@@ -1,0 +1,150 @@
+---
+title: 04 - Diagnose Sidecar Failures
+description: Master the symptom-first diagnostic workflow to isolate deployment, image pull, startup, memory pressure, and networking failures in App Service sidecars.
+---
+
+## Overview
+
+Because App Service sidecars and main containers run as **one unified application**, a sidecar crash often presents externally as a generic `500 Internal Server Error` or `504 Gateway Timeout`.
+
+To resolve incidents efficiently, follow a **symptom-first workflow** that isolates failures across 6 distinct boundaries before changing configurations or scaling compute capacity.
+
+---
+
+## 1. The Symptom-First Diagnostic Workflow
+
+Never guess or change multiple settings at once! Systematically trace requests across these 6 boundaries:
+
+```
+[ Ingress Request ] ──► 1. Configuration Spec (sitecontainers list/show)
+                               │
+                               ▼
+                        2. ACR Image Pull (Managed Identity & RBAC / Network)
+                               │
+                               ▼
+                        3. Process Startup (Entrypoint / Foreground execution)
+                               │
+                               ▼
+                        4. Plan Capacity (CPU / RAM Memory Exhaustion)
+                               │
+                               ▼
+                        5. Local Host Connectivity (localhost:<port> timeouts)
+                               │
+                               ▼
+                        6. Shared /home Volume (Atomic file write permissions)
+```
+
+---
+
+## 2. Boundary 1 & 2: Inspecting Configuration & Image Pulls
+
+### CLI Diagnostic Commands
+
+Before analyzing application logs, confirm whether container metadata successfully reached Azure and whether the container image was pulled:
+
+```bash
+# Step 1: List all site containers and verify role definitions
+az webapp sitecontainers list \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --output table
+
+# Step 2: Show single container configuration spec
+az webapp sitecontainers show \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --container-name model-server
+
+# Step 3: Check platform container runtime status
+az webapp sitecontainers status \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --container-name model-server
+```
+
+### High-Yield Image Pull Root Causes & Fixes
+
+| Evidence / Error | Likely Root Cause | Fix |
+| :--- | :--- | :--- |
+| `token validation failed` | ACR does not accept ARM audience tokens for Managed Identity | Enable ARM auth on ACR: `az acr config authentication-as-arm show --name acrlab06` |
+| `Forbidden / 403` after role assignment | Entra ID RBAC propagation delay | Role assignments take 1–5 minutes to propagate. Wait before modifying settings |
+| `Missing Role Assignment` | Web App Managed Identity lacks read permissions | Assign `AcrPull` role to Web App identity on ACR scope |
+| Pull failure behind VNet | Egress traffic blocked by firewall | Enable **"Pull image over VNet"** option in Web App networking settings |
+
+---
+
+## 3. Boundary 3 & 4: Process Startup & Memory Pressure
+
+### Inspect Container Process Logs
+
+Retrieve logs **specifically for the sidecar container** to prevent main API log messages from obscuring process output:
+
+```bash
+az webapp sitecontainers log \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --container-name model-server
+```
+
+### Process Startup & Capacity Checkpoints:
+
+1. **Foreground Execution**: Container entrypoints must remain in the foreground (e.g., `ENTRYPOINT ["ollama", "serve"]`). If a startup script launches a daemon in the background (`ollama serve &`) and exits, Docker terminates the container immediately.
+2. **Target Port Alignment**: Ensure the process binds to the port declared in `--target-port 11434`.
+3. **Model Initialization RAM Spikes**: AI inference sidecars (e.g. Phi-3, TEI) load large model matrices on boot. If memory consumption exceeds the App Service Plan limit, the Linux OOM-Killer silently kills the process without emitting an application stack trace.
+
+---
+
+## 4. Boundary 5: Local Connectivity & Telemetry Mapping
+
+When inter-container calls to `http://localhost:11434` fail, classify exceptions in your application code into 3 diagnostic buckets:
+
+```python
+import httpx
+
+async def check_model_health() -> str:
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get("http://localhost:11434/health")
+            response.raise_for_status()
+            return "ready"
+    except httpx.ConnectError:
+        # Category A: Process crashed or target port mismatch
+        return "connect-error"
+    except httpx.TimeoutException:
+        # Category B: Sidecar is frozen, loading weights, or out of RAM
+        return "timeout"
+    except httpx.HTTPStatusError as error:
+        # Category C: Connected successfully, but sidecar rejected request (4xx/5xx)
+        return f"http-{error.response.status_code}"
+```
+
+### Telemetry Best Practice:
+- **`ConnectError`**: Process not listening or container crashed.
+- **`TimeoutException`**: Sidecar overburdened or thread locked during prompt inference.
+- **`HTTPStatusError`**: Sidecar application error (e.g., model not found or invalid JSON input).
+
+> [!CAUTION]
+> Never return raw internal connection tracebacks to external public HTTP clients! Log diagnostic categories internally with a correlation ID and return a clean, generic 503 response to public callers.
+
+---
+
+## 5. Boundary 6: Shared File Volume Diagnostics
+
+If file exchange over `/home/models/` fails:
+1. Verify `WEBSITES_ENABLE_APP_SERVICE_STORAGE` is not set to `false`.
+2. Verify both containers resolve paths relative to `/home/models/manifest.json`.
+3. Remove explicit `volumeMounts` arrays from `sitecontainers` JSON specs to restore default App Service `/home` behavior.
+4. Ensure the writer container uses **Atomic Write & Replace** (`.tmp` -> `.replace()`).
+
+---
+
+## Incident Response & Verification Checklist
+
+When filing or resolving a sidecar production incident, document:
+
+- [x] Web App name, resource group, and target container name (`model-server`).
+- [x] Container image digest/tag deployed (`acrlab06.azurecr.io/model-server:latest`).
+- [x] Output of `az webapp sitecontainers status` and `az webapp sitecontainers log`.
+- [x] CPU & Memory metrics on the App Service Plan during the failure window.
+- [x] Confirmed fix verification under representative load test.
+

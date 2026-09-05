@@ -1,0 +1,50 @@
+---
+title: Lab 04 - App Service Sidecars for AI
+description: Master deploying multi-container Linux applications with AI inference sidecars on Azure App Service.
+---
+
+## Overview
+
+In this lab, you will learn how to design, configure, and deploy **sidecar-enabled AI applications** on **Azure App Service**. 
+
+An Azure App Service **sidecar** is an auxiliary container running in the exact same Linux virtual machine instance alongside your main application container. This architectural pattern allows you to run local AI model inference engines (such as Ollama, Text Embeddings Inference, or Small Language Models), telemetry collectors, or caching layers without bloating your main application image.
+
+---
+
+## Architectural Pattern: Main vs. Sidecar Containers
+
+```
++-----------------------------------------------------------------------------------+
+|                        Azure App Service Instance (Linux VM)                      |
+|                                                                                   |
+|  +-----------------------------------------------------------------------------+  |
+|  |                       Shared Network Namespace (localhost)                  |  |
+|  |                                                                             |  |
+|  |  +-------------------------+         +-----------------------------------+  |  |
+|  |  |     Main Container      |         |         Sidecar Container         |  |  |
+|  |  |      (isMain: true)     |  HTTP   |          (isMain: false)          |  |  |
+|  |  |                         |-------->|                                   |  |  |
+|  |  |   FastAPI / Express App |         |   AI Model Server (Ollama / TEI)  |  |  |
+|  |  |   Exposes Port 8080     |         |   Internal Port 11434             |  |  |
+|  |  +-------------------------+         +-----------------------------------+  |  |
+|  +-----------------------------------------------------------------------------+  |
++-----------------------------------------------------------------------------------+
+                                           ^
+                                     Public Internet
+                               (Routed ONLY to Main)
+```
+
+---
+
+## What You Will Learn
+
+1. **Choosing the Sidecar Pattern**: Evaluate coupling, shared network namespaces, lifecycle synchronization, and when to choose sidecars vs. dedicated microservices (Azure Container Apps / Azure OpenAI).
+2. **Configuration Model**: Transition from classic single-container (`DOCKER|<image>`) to the modern `Microsoft.Web/sites/sitecontainers` resource model.
+3. **Capacity & Resource Limits**: Perform capacity planning across shared CPU and memory resources on an App Service Plan.
+
+---
+
+## Lab Units
+
+- [01 - Choose the App Service Sidecar Pattern](./01-choose-sidecar-pattern)
+

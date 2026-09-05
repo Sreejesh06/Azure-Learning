@@ -1,0 +1,210 @@
+---
+title: 02 - Configure Main and Sidecar Containers
+description: Learn how to provision, configure, and manage App Service site container resources using Azure CLI, declarative JSON specs, and Managed Identity authentication.
+---
+
+## Overview
+
+Sidecar-enabled applications define both main and auxiliary containers as **App Service site container resources** (`Microsoft.Web/sites/sitecontainers`). 
+
+In this unit, you will master configuring container roles, port bindings, container-scoped environment variables, declarative JSON specifications, and private ACR image pulls using **Managed Identity** in your lab environment (`container-learning` / `acrlab06`).
+
+> [!TIP]
+> The complete executable shell script and JSON spec file for this lab are stored in [`labs/lab-04-sidecar-ai-app-service/commands_cheatsheet.sh`](file:///Users/sreejesh/Documents/Projects/azure-learning/labs/lab-04-sidecar-ai-app-service/commands_cheatsheet.sh).
+
+---
+
+## 1. Enable Site Containers on App Service
+
+You can enable site container support during Web App creation or convert an existing custom-container app.
+
+### Option A: Create a New App with `--sitecontainers-app`
+
+```bash
+az webapp create \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --plan inference-plan \
+  --sitecontainers-app
+```
+
+> [!NOTE]
+> The `--sitecontainers-app` flag configures the app to use `sitecontainers` resources rather than the classic single-container `DOCKER|<image>` property.
+
+### Option B: Convert an Existing Custom-Container App
+
+```bash
+az webapp sitecontainers convert \
+  --mode sitecontainers \
+  --name inference-sidecar-app \
+  --resource-group container-learning
+```
+
+> [!WARNING]
+> **Configuration Conversion Warning**: Converting an app changes how container settings are stored. Classic app settings including `WEBSITES_PORT` and `DOCKER_REGISTRY_SERVER_*` **do not apply** to site container definitions!
+
+---
+
+## 2. Define Roles and Port Binding Rules
+
+Every container definition requires a unique `--container-name` and a complete image URI from your ACR (`acrlab06.azurecr.io`).
+
+### Port Binding Rules:
+1. **External HTTP Ingress**: Exactly **one** container must set `--is-main`. The main process MUST listen on **port 80 or 8080** because App Service supports only those ports for external HTTP ingress traffic.
+2. **`localhost` Port Uniqueness**: Because all containers share the VM's network namespace (`127.0.0.1`), no two processes can bind to the same port.
+3. **Internal Sidecars**: Can listen on any available unique port (e.g. `11434` for Ollama/Phi-3, `8000` for vLLM/TEI).
+
+### Step 1: Create Main API Container Definition
+```bash
+az webapp sitecontainers create \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --container-name main-api \
+  --image acrlab06.azurecr.io/inference-api:latest \
+  --target-port 8080 \
+  --is-main
+```
+
+### Step 2: Create Model Server Sidecar Container Definition
+```bash
+az webapp sitecontainers create \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --container-name model-server \
+  --image acrlab06.azurecr.io/model-server:latest \
+  --target-port 11434
+```
+*(Omitting `--is-main` automatically leaves the property set to `false`)*.
+
+---
+
+## 3. Environment Variable Scoping (App Settings vs. Container Env Vars)
+
+App Service provides two levels of environment variable scoping:
+- **App Settings**: Global key-value pairs available to the entire app.
+- **Container Environment Variables**: Container-specific variables defined inside a site container resource.
+
+In site container specs, each `environmentVariables[].value` identifies the **name of a global App Setting** rather than a literal secret string.
+
+### Step 1: Create Global App Settings
+```bash
+az webapp config appsettings set \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --settings \
+    MODEL_ENDPOINT_VALUE=http://localhost:11434 \
+    MODEL_NAME_VALUE=phi-3-mini-instruct
+```
+
+### Step 2: Define Declarative Specification (`sitecontainers-spec.json`)
+
+You can create or update all containers in a single atomic command using a JSON specification file:
+
+```json
+[
+  {
+    "name": "main-api",
+    "properties": {
+      "image": "acrlab06.azurecr.io/inference-api:latest",
+      "targetPort": "8080",
+      "isMain": true,
+      "environmentVariables": [
+        {
+          "name": "MODEL_ENDPOINT",
+          "value": "MODEL_ENDPOINT_VALUE"
+        }
+      ]
+    }
+  },
+  {
+    "name": "model-server",
+    "properties": {
+      "image": "acrlab06.azurecr.io/model-server:latest",
+      "targetPort": "11434",
+      "isMain": false,
+      "environmentVariables": [
+        {
+          "name": "MODEL_NAME",
+          "value": "MODEL_NAME_VALUE"
+        }
+      ]
+    }
+  }
+]
+```
+
+### Step 3: Apply the Specification File
+```bash
+az webapp sitecontainers create \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --sitecontainers-spec-file ./sitecontainers-spec.json
+```
+
+---
+
+## 4. Authenticate Private ACR Image Pulls via Managed Identity
+
+Production backends avoid registry passwords by authenticating image pulls via **Managed Identity**.
+
+### Step 1: Assign System-Assigned Managed Identity to Web App
+```bash
+az webapp identity assign \
+  --name inference-sidecar-app \
+  --resource-group container-learning
+```
+
+### Step 2: Grant `AcrPull` Role on `acrlab06`
+```bash
+PRINCIPAL_ID=$(az webapp identity show \
+  -g container-learning \
+  -n inference-sidecar-app \
+  --query principalId -o tsv)
+
+ACR_ID=$(az acr show \
+  -g container-learning \
+  -n acrlab06 \
+  --query id -o tsv)
+
+az role assignment create \
+  --assignee $PRINCIPAL_ID \
+  --scope $ACR_ID \
+  --role AcrPull
+```
+
+### Step 3: Verify ACR ARM Audience Authentication
+Ensure ACR accepts ARM tokens for managed identity authentication:
+```bash
+az acr config authentication-as-arm show --name acrlab06
+```
+
+---
+
+## 5. Verify & Audit Deployed Site Containers
+
+Always separate deployment metadata issues from application runtime failures by inspecting container definitions.
+
+### List All Site Containers in App
+```bash
+az webapp sitecontainers list \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --output table
+```
+
+### Inspect Details of a Specific Container
+```bash
+az webapp sitecontainers show \
+  --name inference-sidecar-app \
+  --resource-group container-learning \
+  --container-name model-server
+```
+
+---
+
+## Key Takeaways for AI-200
+
+1. **`az webapp sitecontainers create`**: Used to define site containers individually or via `--sitecontainers-spec-file`.
+2. **Port Restrictions**: Main container must listen on port 80 or 8080. Sidecars can use any available unique port on `localhost`.
+3. **Environment Mapping**: Container `environmentVariables[].value` maps to the key name of an App Setting.
+4. **Managed Identity Auth**: Authenticates ACR pulls securely without passwords via `AcrPull` role assignments.

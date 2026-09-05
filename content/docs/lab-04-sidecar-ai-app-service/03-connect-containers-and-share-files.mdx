@@ -1,0 +1,123 @@
+---
+title: 03 - Connect Containers and Share Files
+description: Learn how to design resilient inter-container communication over shared network namespaces and implement atomic file exchange over the shared /home volume.
+---
+
+## Overview
+
+App Service sidecars communicate through a **shared network namespace**, allowing your main application container to invoke local AI inference servers over `localhost`. Additionally, containers share the default `/home` volume for fast file exchange.
+
+This guide details how to build resilient HTTP clients, implement atomic file operations, and select the correct Azure storage boundary.
+
+> [!TIP]
+> Complete executable Python code for this unit is available in [`labs/lab-04-sidecar-ai-app-service/app_client.py`](file:///Users/sreejesh/Documents/Projects/azure-learning/labs/lab-04-sidecar-ai-app-service/app_client.py).
+
+---
+
+## 1. Connect Through the Shared Network Namespace
+
+All containers in a sidecar-enabled app instance share the host VM network namespace (`127.0.0.1`). 
+
+- **Addressing**: Containers call each other via `http://localhost:<target-port>` (e.g. `http://localhost:11434`), **not** via container names or DNS hostnames.
+- **Instance Isolation**: When App Service scales out to multiple VM instances, each main API container calls the sidecar model server on its own local instance.
+
+```
+[ Main API Container (Port 8080) ] ──── HTTP POST ────> [ Sidecar Container (Port 11434) ]
+                                    (http://localhost:11434)
+```
+
+---
+
+## 2. Resilient HTTP Client Design for AI Sidecars
+
+Although local `localhost` calls eliminate external network hops, model servers can experience high latency, prompt processing queues, or out-of-memory restarts. Your API must treat the sidecar as a fallible dependency.
+
+### Bounded HTTP Client Policy
+
+1. **Short Connection Timeout (`connect=2.0`s)**: Instantly detects if the sidecar process crashed or isn't listening.
+2. **Read/Write Timeout (`10.0`s)**: Limits network inactivity during response streaming.
+3. **Application Deadline (`asyncio.timeout(30.0)`s)**: Sets an absolute deadline for the entire operation.
+4. **Controlled Retries**: Do **not** blindly retry failed requests! Retrying heavy inference calls during sidecar failure exacerbates resource exhaustion. Only retry idempotent operations for transient errors.
+
+```python
+import asyncio
+import httpx
+
+MODEL_ENDPOINT = "http://localhost:11434/v1/chat/completions"
+
+async def request_completion(messages: list[dict[str, str]]) -> dict:
+    # 2-second connection timeout, 10-second pool timeout
+    timeout = httpx.Timeout(10.0, connect=2.0)
+    
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        # 30-second deadline for the full operation
+        async with asyncio.timeout(30.0):
+            response = await client.post(
+                MODEL_ENDPOINT,
+                json={"model": "phi-3-mini-instruct", "messages": messages},
+            )
+            response.raise_for_status()
+            return response.json()
+```
+
+---
+
+## 3. File Sharing via the Built-In `/home` Volume
+
+By default, Azure App Service mounts the persistent `/home` volume into **all containers on the instance**.
+
+- **Shared Path**: All containers can read and write files under `/home` (e.g. `/home/models/manifest.json`) without adding custom `volumeMounts` to their site container JSON specs.
+- **Persistence Control**: Driven by `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true`.
+
+> [!WARNING]
+> **Avoid Custom `volumeMounts`**: Adding explicit `volumeMounts` arrays to your `sitecontainers` JSON specification alters the container filesystem view and can break App Service SCM/deployment endpoints. Use the built-in `/home` mount whenever possible.
+
+---
+
+## 4. Atomic File Write Pattern (Preventing Race Conditions)
+
+When two processes exchange files over a shared volume, a consumer container might read a manifest or model artifact while the producer container is halfway through writing it.
+
+To prevent reading partially written files, use the **Atomic Write and Rename Pattern**:
+
+```python
+from pathlib import Path
+
+SHARED_DIR = Path("/home/models")
+SHARED_DIR.mkdir(parents=True, exist_ok=True)
+
+temp_manifest = SHARED_DIR / "manifest.json.tmp"
+final_manifest = SHARED_DIR / "manifest.json"
+
+# Step 1: Write payload to temporary file
+temp_manifest.write_text('{"model": "phi-3-mini-instruct", "status": "ready"}', encoding="utf-8")
+
+# Step 2: Perform atomic replace (rename)
+temp_manifest.replace(final_manifest)
+```
+
+> [!NOTE]
+> The `.replace()` call executes as an **atomic OS kernel operation**. The reader container sees either the old complete file or the new complete file—never a corrupted partial write.
+
+---
+
+## 5. Storage Boundary Decision Matrix for AI-200
+
+| Scenario / Artifact Type | Recommended Storage Boundary | Why |
+| :--- | :--- | :--- |
+| **Local Model Manifests / Local Caches** | Shared `/home` Volume (`/home/models/`) | Fast, local file access across containers on the same app instance. |
+| **Temporary Request Processing Files** | Shared `/home` Volume (`/home/tmp/`) | Short-lived operational workflow files within the app instance. |
+| **Large Pre-trained Model Weights** | **Azure Blob Storage** / **Azure Files** | Centralized, durable storage shared across multiple independent web apps. |
+| **Audit Logs / Customer Documents** | **Azure Blob Storage** / **Azure SQL** | Immutable, enterprise system of record with access policies and backup controls. |
+
+---
+
+## 6. Integration & Health Validation Checklist
+
+Validate your sidecar integration in this specific order:
+
+- [x] **Port Uniqueness**: Verify each container definition declares a unique target port.
+- [x] **Process Listener**: Check sidecar container logs to confirm the process bound to its expected port (e.g. `11434`).
+- [x] **Lightweight Health Call**: Call a sidecar health endpoint (`http://localhost:11434/api/tags` or GET root) from the main container before forwarding client traffic.
+- [x] **Atomic File Exchange**: Verify writer container writes to `.tmp` before renaming to `.json`, and reader container successfully parses the final file from `/home/models/`.
+

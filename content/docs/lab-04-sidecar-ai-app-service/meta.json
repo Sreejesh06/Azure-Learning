@@ -1,0 +1,10 @@
+{
+  "title": "04 - App Service Sidecars for AI",
+  "pages": [
+    "index",
+    "01-choose-sidecar-pattern",
+    "02-configure-main-and-sidecars",
+    "03-connect-containers-and-share-files",
+    "04-diagnose-sidecar-failures"
+  ]
+}
