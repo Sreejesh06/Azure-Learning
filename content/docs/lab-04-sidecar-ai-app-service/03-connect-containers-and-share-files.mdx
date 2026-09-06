@@ -9,8 +9,9 @@ App Service sidecars communicate through a **shared network namespace**, allowin
 
 This guide details how to build resilient HTTP clients, implement atomic file operations, and select the correct Azure storage boundary.
 
-> [!TIP]
-> Complete executable Python code for this unit is available in [`labs/lab-04-sidecar-ai-app-service/app_client.py`](file:///Users/sreejesh/Documents/Projects/azure-learning/labs/lab-04-sidecar-ai-app-service/app_client.py).
+<Callout type="info">
+Complete executable Python code for this unit is available in [`labs/lab-04-sidecar-ai-app-service/app_client.py`](file:///Users/sreejesh/Documents/Projects/azure-learning/labs/lab-04-sidecar-ai-app-service/app_client.py).
+</Callout>
 
 ---
 
@@ -69,8 +70,9 @@ By default, Azure App Service mounts the persistent `/home` volume into **all co
 - **Shared Path**: All containers can read and write files under `/home` (e.g. `/home/models/manifest.json`) without adding custom `volumeMounts` to their site container JSON specs.
 - **Persistence Control**: Driven by `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true`.
 
-> [!WARNING]
-> **Avoid Custom `volumeMounts`**: Adding explicit `volumeMounts` arrays to your `sitecontainers` JSON specification alters the container filesystem view and can break App Service SCM/deployment endpoints. Use the built-in `/home` mount whenever possible.
+<Callout type="warn">
+**Avoid Custom `volumeMounts`**: Adding explicit `volumeMounts` arrays to your `sitecontainers` JSON specification alters the container filesystem view and can break App Service SCM/deployment endpoints. Use the built-in `/home` mount whenever possible.
+</Callout>
 
 ---
 
@@ -96,8 +98,9 @@ temp_manifest.write_text('{"model": "phi-3-mini-instruct", "status": "ready"}', 
 temp_manifest.replace(final_manifest)
 ```
 
-> [!NOTE]
-> The `.replace()` call executes as an **atomic OS kernel operation**. The reader container sees either the old complete file or the new complete file—never a corrupted partial write.
+<Callout type="info">
+The `.replace()` call executes as an **atomic OS kernel operation**. The reader container sees either the old complete file or the new complete file—never a corrupted partial write.
+</Callout>
 
 ---
 

@@ -9,8 +9,9 @@ Sidecar-enabled applications define both main and auxiliary containers as **App 
 
 In this unit, you will master configuring container roles, port bindings, container-scoped environment variables, declarative JSON specifications, and private ACR image pulls using **Managed Identity** in your lab environment (`container-learning` / `acrlab06`).
 
-> [!TIP]
-> The complete executable shell script and JSON spec file for this lab are stored in [`labs/lab-04-sidecar-ai-app-service/commands_cheatsheet.sh`](file:///Users/sreejesh/Documents/Projects/azure-learning/labs/lab-04-sidecar-ai-app-service/commands_cheatsheet.sh).
+<Callout type="info">
+The complete executable shell script and JSON spec file for this lab are stored in [`labs/lab-04-sidecar-ai-app-service/commands_cheatsheet.sh`](file:///Users/sreejesh/Documents/Projects/azure-learning/labs/lab-04-sidecar-ai-app-service/commands_cheatsheet.sh).
+</Callout>
 
 ---
 
@@ -28,8 +29,9 @@ az webapp create \
   --sitecontainers-app
 ```
 
-> [!NOTE]
-> The `--sitecontainers-app` flag configures the app to use `sitecontainers` resources rather than the classic single-container `DOCKER|<image>` property.
+<Callout type="info">
+The `--sitecontainers-app` flag configures the app to use `sitecontainers` resources rather than the classic single-container `DOCKER|<image>` property.
+</Callout>
 
 ### Option B: Convert an Existing Custom-Container App
 
@@ -40,8 +42,9 @@ az webapp sitecontainers convert \
   --resource-group container-learning
 ```
 
-> [!WARNING]
-> **Configuration Conversion Warning**: Converting an app changes how container settings are stored. Classic app settings including `WEBSITES_PORT` and `DOCKER_REGISTRY_SERVER_*` **do not apply** to site container definitions!
+<Callout type="warn">
+**Configuration Conversion Warning**: Converting an app changes how container settings are stored. Classic app settings including `WEBSITES_PORT` and `DOCKER_REGISTRY_SERVER_*` **do not apply** to site container definitions!
+</Callout>
 
 ---
 

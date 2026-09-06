@@ -7,11 +7,12 @@ description: Master container logging, real-time log streaming, Kudu (SCM) diagn
 
 When a containerized app fails to start, returns 404 errors, or crashes under load, Azure App Service provides 5 diagnostic layers to inspect and resolve issues.
 
-> [!IMPORTANT]
-> **Understanding Dual-Container Architecture (Kudu SCM vs App Container)**  
-> Azure App Service runs **two separate containers**:
-> 1. **Kudu SCM Sidecar Container (`kudu_ssh_user`)**: Azure's internal management container running deployment scripts, log streaming, and SCM diagnostics. (This is what opens when you run Kudu Debug Console).
-> 2. **Your Application Container**: Your custom Docker image running Gunicorn/Python on port `WEBSITES_PORT`. (Access this via **SSH** in Azure Portal or `az webapp ssh`).
+<Callout type="warn">
+**Understanding Dual-Container Architecture (Kudu SCM vs App Container)**  
+Azure App Service runs **two separate containers**:
+1. **Kudu SCM Sidecar Container (`kudu_ssh_user`)**: Azure's internal management container running deployment scripts, log streaming, and SCM diagnostics. (This is what opens when you run Kudu Debug Console).
+2. **Your Application Container**: Your custom Docker image running Gunicorn/Python on port `WEBSITES_PORT`. (Access this via **SSH** in Azure Portal or `az webapp ssh`).
+</Callout>
 
 ---
 

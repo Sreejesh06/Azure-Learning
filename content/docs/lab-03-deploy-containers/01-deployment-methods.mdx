@@ -64,8 +64,9 @@ az provider register -n Microsoft.Web
 az provider show -n Microsoft.Web --query "registrationState"
 ```
 
-> [!TIP]
-> If a brand new Azure resource fails with a "Registration" error, resolve it by executing `az provider register -n <Namespace.Name>`.
+<Callout type="info">
+If a brand new Azure resource fails with a "Registration" error, resolve it by executing `az provider register -n <Namespace.Name>`.
+</Callout>
 
 ### Step 2: Create Linux App Service Plan
 **Why:** Provisions the underlying Linux server farm (`B1` tier) to host your containers.

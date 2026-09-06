@@ -38,8 +38,9 @@ az webapp config appsettings set \
   --settings WEBSITES_PORT=8000
 ```
 
-> [!NOTE]
-> Azure App Service terminates TLS at the platform load balancer level. This means your container receives unencrypted HTTP traffic internally on `WEBSITES_PORT` even when clients connect via HTTPS. Only one HTTP port can be exposed per container.
+<Callout type="info">
+Azure App Service terminates TLS at the platform load balancer level. This means your container receives unencrypted HTTP traffic internally on `WEBSITES_PORT` even when clients connect via HTTPS. Only one HTTP port can be exposed per container.
+</Callout>
 
 #### Common Framework Default Ports:
 * **Node.js (Express):** Port `3000` (`WEBSITES_PORT=3000`)
@@ -130,8 +131,9 @@ log_level = os.environ.get('LOG_LEVEL', 'WARNING')
 max_size = int(os.environ.get('MAX_DOCUMENT_SIZE_MB', 10))
 ```
 
-> [!TIP]
-> For Linux containers, nested configuration keys that use colons (`:`) in .NET must use double underscores (`__`). For example, `ConnectionStrings:DefaultConnection` becomes `ConnectionStrings__DefaultConnection`.
+<Callout type="info">
+For Linux containers, nested configuration keys that use colons (`:`) in .NET must use double underscores (`__`). For example, `ConnectionStrings:DefaultConnection` becomes `ConnectionStrings__DefaultConnection`.
+</Callout>
 
 ---
 

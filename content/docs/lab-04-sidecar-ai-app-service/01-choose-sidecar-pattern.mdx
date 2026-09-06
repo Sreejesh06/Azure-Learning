@@ -7,8 +7,9 @@ description: Evaluate architectural trade-offs, network isolation, container lif
 
 An **Azure App Service sidecar** is an auxiliary container that runs in the same environment as the main Linux app container. Sidecars add capabilities such as local AI inference, telemetry collection, or caching without placing those capabilities inside the main application image.
 
-> [!NOTE]
-> Sidecars are supported **only on Linux App Service Plans** running on standard tiers or higher. They are not supported on Windows or Free/Shared tiers.
+<Callout type="info">
+Sidecars are supported **only on Linux App Service Plans** running on standard tiers or higher. They are not supported on Windows or Free/Shared tiers.
+</Callout>
 
 ## Configuration Model
 

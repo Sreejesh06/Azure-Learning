@@ -123,8 +123,9 @@ async def check_model_health() -> str:
 - **`TimeoutException`**: Sidecar overburdened or thread locked during prompt inference.
 - **`HTTPStatusError`**: Sidecar application error (e.g., model not found or invalid JSON input).
 
-> [!CAUTION]
-> Never return raw internal connection tracebacks to external public HTTP clients! Log diagnostic categories internally with a correlation ID and return a clean, generic 503 response to public callers.
+<Callout type="error">
+Never return raw internal connection tracebacks to external public HTTP clients! Log diagnostic categories internally with a correlation ID and return a clean, generic 503 response to public callers.
+</Callout>
 
 ---
 
