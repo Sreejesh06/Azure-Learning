@@ -13,6 +13,25 @@ An Azure App Service **sidecar** is an auxiliary container running in the exact 
 
 ## Architectural Pattern: Main vs. Sidecar Containers
 
+```mermaid
+flowchart TB
+    subgraph Client ["External Client Boundary"]
+        User["Public Client<br/>(Flask App / Browser)"]
+    end
+
+    subgraph AppService ["Azure App Service Instance (Linux VM)"]
+        subgraph NetNS ["Shared Network Namespace (127.0.0.1)"]
+            MainContainer["Main API Container (isMain: true)<br/>(Flask - api/main.py)<br/>Port: 8080"]
+            SidecarContainer["Model Server Sidecar (isMain: false)<br/>(FastAPI - model-server/main.py)<br/>ONNX Runtime GenAI (Phi-3 INT4)<br/>Port: 11434"]
+        end
+
+        SharedVolume[("Shared Disk Volume<br/>/home/models/manifest.json")]
+    end
+
+    User -->|"HTTPS Ingress (Port 8080)"| MainContainer
+    MainContainer -->|"HTTP POST /generate<br/>http://localhost:11434"| SidecarContainer
+    SidecarContainer -->|"Writes Manifest on Boot"| SharedVolume
+    MainContainer -->|"Reads Manifest (/model-info)"| SharedVolume
 ```
 +-----------------------------------------------------------------------------------+
 |                        Azure App Service Instance (Linux VM)                      |
@@ -41,6 +60,8 @@ An Azure App Service **sidecar** is an auxiliary container running in the exact 
 1. **Choosing the Sidecar Pattern**: Evaluate coupling, shared network namespaces, lifecycle synchronization, and when to choose sidecars vs. dedicated microservices (Azure Container Apps / Azure OpenAI).
 2. **Configuration Model**: Transition from classic single-container (`DOCKER|<image>`) to the modern `Microsoft.Web/sites/sitecontainers` resource model.
 3. **Capacity & Resource Limits**: Perform capacity planning across shared CPU and memory resources on an App Service Plan.
+4. **Resilient Inter-Container Networking**: Configure `httpx` timeouts, readiness probes (`/health/ready`), and atomic file writing over `/home`.
+5. **Boundary Troubleshooting**: Diagnose deployment metadata, managed identity image pulls, process startup exits, and memory pressure.
 
 ---
 
@@ -48,3 +69,6 @@ An Azure App Service **sidecar** is an auxiliary container running in the exact 
 
 - [01 - Choose the App Service Sidecar Pattern](./01-choose-sidecar-pattern)
 
+- [02 - Configure Main and Sidecar Containers](./02-configure-main-and-sidecars)
+- [03 - Connect Containers and Share Files](./03-connect-containers-and-share-files)
+- [04 - Diagnose Sidecar Failures](./04-diagnose-sidecar-failures)
