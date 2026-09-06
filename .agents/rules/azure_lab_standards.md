@@ -58,3 +58,15 @@ If you fail to follow these structural, pedagogical, and tonal guidelines, you a
   - For standard rectangular diagrams/windows, use appropriate width limits (e.g., `<img src="..." width="600" alt="..." />`).
   - Ensure images render cleanly across both GitHub Markdown previews and MDX docs.
 
+
+## 6. Architecture Diagrams (Mermaid)
+- **Component Format:** Every architecture diagram in the codebase MUST be rendered via the `<Mermaid>` React component. 
+- **No Raw Blocks:** Never use raw fenced ` ```mermaid ` code blocks in Fumadocs MDX files, as they will render as plain text. 
+- **Syntax:**
+  ```jsx
+  <Mermaid chart={`
+  %%{init: {'theme': 'default'}}%%
+  flowchart TB
+      Node1["Text"] --> Node2["Text"]
+  `} />
+  ```

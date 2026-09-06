@@ -13,7 +13,8 @@ An Azure App Service **sidecar** is an auxiliary container running in the exact 
 
 ## Architectural Pattern: Main vs. Sidecar Containers
 
-```mermaid
+<Mermaid chart={`
+%%{init: {'theme': 'default'}}%%
 flowchart TB
     subgraph Client ["External Client Boundary"]
         User["Public Client<br/>(Flask App / Browser)"]
@@ -32,7 +33,8 @@ flowchart TB
     MainContainer -->|"HTTP POST /generate<br/>http://localhost:11434"| SidecarContainer
     SidecarContainer -->|"Writes Manifest on Boot"| SharedVolume
     MainContainer -->|"Reads Manifest (/model-info)"| SharedVolume
-```
+`} />
+
 +-----------------------------------------------------------------------------------+
 |                        Azure App Service Instance (Linux VM)                      |
 |                                                                                   |
@@ -43,32 +45,21 @@ flowchart TB
 |  |  |     Main Container      |         |         Sidecar Container         |  |  |
 |  |  |      (isMain: true)     |  HTTP   |          (isMain: false)          |  |  |
 |  |  |                         |-------->|                                   |  |  |
-|  |  |   FastAPI / Express App |         |   AI Model Server (Ollama / TEI)  |  |  |
-|  |  |   Exposes Port 8080     |         |   Internal Port 11434             |  |  |
+|  |  |   Exposed to Internet   |         |      Private to Instance Only     |  |  |
+|  |  |       (Port 8080)       |         |           (Port 11434)            |  |  |
 |  |  +-------------------------+         +-----------------------------------+  |  |
 |  +-----------------------------------------------------------------------------+  |
+|                                                                                   |
 +-----------------------------------------------------------------------------------+
-                                           ^
-                                     Public Internet
-                               (Routed ONLY to Main)
-```
 
----
+## Lab Modules
 
-## What You Will Learn
+In this lab module, you will build and deploy a real-world pattern:
+1. **Model Server Sidecar:** A FastAPI app running ONNX Runtime GenAI that serves the **Phi-3 Mini** model.
+2. **Main Application:** A Flask web application that acts as the user interface and proxies inference requests to the sidecar over `localhost`.
 
-1. **Choosing the Sidecar Pattern**: Evaluate coupling, shared network namespaces, lifecycle synchronization, and when to choose sidecars vs. dedicated microservices (Azure Container Apps / Azure OpenAI).
-2. **Configuration Model**: Transition from classic single-container (`DOCKER|<image>`) to the modern `Microsoft.Web/sites/sitecontainers` resource model.
-3. **Capacity & Resource Limits**: Perform capacity planning across shared CPU and memory resources on an App Service Plan.
-4. **Resilient Inter-Container Networking**: Configure `httpx` timeouts, readiness probes (`/health/ready`), and atomic file writing over `/home`.
-5. **Boundary Troubleshooting**: Diagnose deployment metadata, managed identity image pulls, process startup exits, and memory pressure.
-
----
-
-## Lab Units
-
-- [01 - Choose the App Service Sidecar Pattern](./01-choose-sidecar-pattern)
-
-- [02 - Configure Main and Sidecar Containers](./02-configure-main-and-sidecars)
-- [03 - Connect Containers and Share Files](./03-connect-containers-and-share-files)
-- [04 - Diagnose Sidecar Failures](./04-diagnose-sidecar-failures)
+### Topics Covered
+- [01 - Choose the App Service Sidecar Pattern](/docs/lab-04-sidecar-ai-app-service/01-choose-sidecar-pattern)
+- [02 - Code and Containerize the Multi-Container App](/docs/lab-04-sidecar-ai-app-service/02-code-and-containerize)
+- [03 - Configure and Deploy via ARM / Bicep](/docs/lab-04-sidecar-ai-app-service/03-configure-and-deploy)
+- [04 - Diagnose Sidecar Failures](/docs/lab-04-sidecar-ai-app-service/04-diagnose-sidecar-failures)
