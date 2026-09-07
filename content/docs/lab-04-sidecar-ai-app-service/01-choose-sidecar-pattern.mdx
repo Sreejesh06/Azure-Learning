@@ -25,12 +25,32 @@ flowchart TB
     subgraph Client ["External Client Boundary"]
         User["Public Client<br/>(Flask App / Browser)"]
     end
+architecture-beta
+    group client(internet)[External Client Boundary]
+    group appService(server)[Azure App Service Instance]
+    group netNs(cloud)[Shared Network Namespace] in appService
+    
+    service user(internet)[Public Client] in client
+    service mainApp(server)[Main API Container] in netNs
+    service sidecar(server)[Model Server Sidecar] in netNs
+    service sharedDisk(disk)[Shared Disk Volume] in appService
+    
+    user:B --> T:mainApp
+    mainApp:R <--> L:sidecar
+    sidecar:B --> T:sharedDisk
+    mainApp:B --> T:sharedDisk
+`} />
 
     subgraph AppService ["Azure App Service Instance (Linux VM)"]
         subgraph NetNS ["Shared Network Namespace (127.0.0.1)"]
             MainContainer["Main API Container (isMain: true)<br/>(Flask - api/main.py)<br/>Port: 8080"]
             SidecarContainer["Model Server Sidecar (isMain: false)<br/>(FastAPI - model-server/main.py)<br/>ONNX Runtime GenAI (Phi-3 INT4)<br/>Port: 11434"]
         end
+### Flow Explanation
+1. **The Entry Point:** The public client securely connects via HTTPS to the **Azure App Service Instance** boundary.
+2. **Main Routing:** Traffic hits the **Main API Container** because it is marked as `isMain: true`.
+3. **Internal Handoff:** The Main API Container executes business logic and forwards inference requests privately to the **Model Server Sidecar** over the shared localhost network namespace.
+4. **Shared State:** Both containers write and read from the exact same **Shared Disk Volume** to maintain synchronized state, without needing an external database.
 
         SharedVolume[("Shared Disk Volume<br/>/home/models/manifest.json")]
     end

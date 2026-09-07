@@ -63,10 +63,23 @@ If you fail to follow these structural, pedagogical, and tonal guidelines, you a
 - **Component Format:** Every architecture diagram in the codebase MUST be rendered via the `<Mermaid>` React component. 
 - **No Raw Blocks:** Never use raw fenced ` ```mermaid ` code blocks in Fumadocs MDX files, as they will render as plain text. 
 - **Syntax:**
+- **Diagram Types:** Default to standard flowcharts (`flowchart TB`). However, when visualizing Cloud architecture, CI/CD deployments, or server relationships, you should use Mermaid's `architecture-beta` syntax for native service/group layouts and port bindings (e.g., `L -- R`).
+- **Flow Explanation:** Every Mermaid diagram MUST be immediately followed by a short, technical, and easily graspable explanation of the flow shown. Do not leave the user to guess what the diagram implies; clearly and simply break down the data flow, architecture layers, or lifecycle depicted in the diagram.
+- **Syntax (Standard Flowchart):**
   ```jsx
   <Mermaid chart={`
   %%{init: {'theme': 'default'}}%%
   flowchart TB
       Node1["Text"] --> Node2["Text"]
+  `} />
+  ```
+- **Syntax (Architecture):**
+  ```jsx
+  <Mermaid chart={`
+  architecture-beta
+      group api(cloud)[Azure API]
+      service db(database)[Database] in api
+      service server(server)[Server] in api
+      db:L -- R:server
   `} />
   ```

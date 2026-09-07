@@ -1,0 +1,192 @@
+---
+title: 02 - Deploy a Container App (CLI & YAML)
+description: Master the mechanics of Azure Container Apps deployments. Understand Resource Providers, Revisions, and transitioning from Imperative CLI to Declarative YAML.
+---
+
+## Overview
+
+Deploying an application to Azure Container Apps (ACA) is not just about running a command—it is about choosing the right deployment mechanic for your lifecycle stage. 
+
+You can deploy rapidly using **imperative CLI commands** for prototyping, or you can use **declarative YAML configuration** for production-grade, version-controlled deployments. 
+
+In this module, we will unpack exactly what happens during a deployment, clarify essential terminology, and look at the **Revision model** that allows zero-downtime updates for AI services.
+
+---
+
+## Buzzword Breakdown
+
+Before running deployment commands, you must understand the vocabulary ACA uses.
+
+*   **Resource Provider (`Microsoft.App`)**: In Azure Resource Manager (ARM), a provider is a service that supplies Azure resources. If a provider isn't "registered" to your subscription, Azure literally doesn't know how to create that type of resource.
+*   **FQDN (Fully Qualified Domain Name)**: The exact, complete internet address of your app (e.g., `ai-api.wonderfulsea-1234.centralus.azurecontainerapps.io`). 
+*   **Revision**: An immutable (unchangeable) snapshot of your container app's configuration and image. Every time you change the app's image or environment variables, a *new* Revision is created. 
+*   **Imperative vs. Declarative**: 
+    *   *Imperative* (CLI flags): You tell Azure *how* to do it step-by-step (`az containerapp update --image v2`). 
+    *   *Declarative* (YAML): You tell Azure *what* the final state should look like, and Azure figures out the steps to make it happen.
+
+<Callout type="tip">
+**Memory Aid:** 
+Think of a **Revision** like a *Git Commit* for your infrastructure. You can always roll back to a previous commit (revision) if the new one introduces a bug!
+</Callout>
+
+---
+
+## The Revision Architecture
+
+To understand deployments, you must visualize the relationship between a Container App and its Revisions. 
+
+<Mermaid chart={`
+%%{init: {'theme': 'default'}}%%
+flowchart TB
+    subgraph Env ["Container Apps Environment"]
+        subgraph App ["Container App: 'ai-api'"]
+            direction TB
+            
+            Ingress["App Ingress / Load Balancer"]
+            
+            subgraph Rev1 ["Revision: ai-api--v1 (Inactive)"]
+                Pod1["Container: my-api:v1"]
+            end
+            
+            subgraph Rev2 ["Revision: ai-api--v2 (Active)"]
+                Pod2["Container: my-api:v2"]
+            end
+            
+            Ingress -.->|0% Traffic| Rev1
+            Ingress ==>|100% Traffic| Rev2
+        end
+    end
+    
+    Client((Client)) -->|"HTTPS (FQDN)"| Ingress
+    
+    classDef active fill:#d4edda,stroke:#28a745,stroke-width:2px;
+    classDef inactive fill:#f8d7da,stroke:#dc3545,stroke-width:2px,stroke-dasharray: 5 5;
+    
+    class Rev2 active;
+    class Rev1 inactive;
+`} />
+
+### Flow Explanation
+1. **Initial State:** The client hits the main App Ingress (Load Balancer). Initially, 100% of traffic routes to the active Revision 2 (`v2`).
+2. **Immutable Revisions:** Revision 1 (`v1`) remains in the environment but is marked inactive (receiving 0% traffic). 
+3. **Traffic Shifting:** When you deploy an update, Azure provisions the new revision in the background. Only once it passes health checks does the load balancer instantly swap the traffic flow from the old revision to the new one, ensuring zero downtime.
+
+---
+
+## Phase 1: Environment Preparation
+
+Before any deployment, you must authenticate, upgrade your tools, and register the necessary Resource Providers. If you skip provider registration, ARM will throw a `ProviderNotRegistered` error when it tries to create the app.
+
+```bash
+# 1. Authenticate to Azure
+az login
+
+# 2. Ensure your ACA extension is current
+az extension add --name containerapp --upgrade
+
+# 3. Register the required ARM providers (One-time setup per subscription)
+az provider register --namespace Microsoft.App
+az provider register --namespace Microsoft.OperationalInsights
+```
+
+---
+
+## Phase 2: Imperative CLI Deployments
+
+The Azure CLI provides two distinct commands for creating an app: `up` and `create`.
+
+### The Prototype Method: \`az containerapp up\`
+The `up` command is designed for speed. If the Resource Group, Environment, or Log Analytics workspace doesn't exist, **this command will automatically create them for you with default names.**
+
+```bash
+az containerapp up \
+  --name my-container-app \
+  --resource-group rg-aca-demo \
+  --location centralus \
+  --environment aca-env-demo \
+  --image mcr.microsoft.com/k8se/quickstart:latest \
+  --target-port 80 \
+  --ingress external \
+  --query properties.configuration.ingress.fqdn
+```
+*When to use:* Hackathons, rapid prototyping, or when you are just exploring the service and don't care about naming conventions or strict network boundaries.
+
+### The Production Method: \`az containerapp create\`
+The `create` command expects the surrounding infrastructure to already exist. It gives you explicit control over the app without accidentally generating phantom resource groups.
+
+```bash
+az containerapp create \
+  --name ai-api \
+  --resource-group rg-aca-demo \
+  --environment aca-env-demo \
+  --image mcr.microsoft.com/k8se/quickstart:latest \
+  --ingress external \
+  --target-port 80
+```
+*When to use:* Real-world deployments where the environment was carefully provisioned beforehand (as we did in Module 1).
+
+### Updating the App (Spawning a New Revision)
+To roll out a new AI model or code change, you update the image. This command seamlessly spins up a new **Revision** and redirects traffic.
+
+```bash
+az containerapp update \
+  --name ai-api \
+  --resource-group rg-aca-demo \
+  --image myregistry.azurecr.io/ai-api:v2
+```
+
+<Callout type="warning">
+**Common Pitfall:** When passing a container image reference via the CLI (like `mcr.microsoft.com/...`), ensure the repository path is **entirely lowercase**. Capital letters in repository paths will trigger image pull failures that misleadingly look like authentication errors!
+</Callout>
+
+---
+
+## Phase 3: Declarative Deployments (YAML)
+
+As your AI service matures, it will accumulate environment variables, secrets, scale rules, and CPU/Memory limits. Managing a CLI command with 20 different flags becomes impossible to maintain and impossible to code-review.
+
+This is where **Declarative YAML** shines. You define the entire app configuration in a file, commit it to GitHub, and Azure CLI applies it. 
+
+### What the YAML actually looks like
+While the Microsoft Learn docs omit this, you cannot use YAML effectively without understanding its schema. It closely resembles a Kubernetes deployment manifest:
+
+```yaml
+# containerapp.yml
+location: centralus
+properties:
+  environmentId: /subscriptions/<sub-id>/resourceGroups/rg-aca-demo/providers/Microsoft.App/managedEnvironments/aca-env-demo
+  configuration:
+    ingress:
+      external: true
+      targetPort: 80
+  template:
+    containers:
+      - image: mcr.microsoft.com/k8se/quickstart:latest
+        name: ai-api
+        resources:
+          cpu: 1.0
+          memory: 2.0Gi
+```
+
+### Applying the YAML
+When you pass the `--yaml` flag to the Azure CLI, **all other flags are ignored.** The YAML file becomes the absolute source of truth.
+
+```bash
+# Create using YAML
+az containerapp create \
+  --name ai-api \
+  --resource-group rg-aca-demo \
+  --yaml ./containerapp.yml
+
+# Update using YAML (Creates a new revision based on the file changes)
+az containerapp update \
+  --name ai-api \
+  --resource-group rg-aca-demo \
+  --yaml ./containerapp.yml
+```
+
+<Callout type="info">
+**AI-200 Exam Insight:** 
+In an enterprise environment, developers rarely run `az containerapp create` from their laptops. Instead, CI/CD pipelines (like GitHub Actions or Azure DevOps) execute the `--yaml` commands. Understanding this transition from CLI prototyping to YAML pipelines is essential for modern AI engineering.
+</Callout>
+

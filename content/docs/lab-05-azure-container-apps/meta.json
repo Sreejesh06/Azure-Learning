@@ -1,0 +1,11 @@
+{
+  "title": "05 - Azure Container Apps",
+  "pages": [
+    "index",
+    "01-explore-environments",
+    "02-deploy-container-app",
+    "03-configure-runtime",
+    "04-connect-to-registries"
+  ]
+}
+

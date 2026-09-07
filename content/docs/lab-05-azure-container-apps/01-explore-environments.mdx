@@ -1,0 +1,129 @@
+---
+title: 01 - Explore Container Apps Environments
+description: Understand the role of Container Apps environments as a logical boundary for AI solutions, networking, and observability.
+---
+
+## Overview
+
+Azure Container Apps organizes workloads into **environments**. An environment acts as a practical, logical boundary for how your AI solution deploys and operates. It provides a secure perimeter that scopes shared networking and observability integrations. 
+
+Choosing how many environments to use is effectively choosing your isolation and management model for containerized services. 
+
+<Callout type="info">
+**AI-200 Exam Tip:** Understand that an environment is *not* just a folder for grouping resources; it actively dictates internal networking routes, shared telemetry backends, and isolation boundaries for containerized microservices. 
+</Callout>
+
+## What a Container Apps Environment Provides
+
+In real-world architectures, it is common to group related services into the same environment. For example, an AI application often consists of a public-facing API and an internal background processor. Grouping them inside the same environment allows them to share networking and logging integration natively. 
+
+Environments are also fundamentally used to enforce **lifecycle separation**. You should separate deployments into different environments based on their lifecycle stages (e.g., Development, Staging, and Production). 
+
+<Mermaid chart={`
+%%{init: {'theme': 'default'}}%%
+flowchart TB
+    subgraph Azure ["Azure Cloud"]
+        subgraph VNET ["Virtual Network / Environment Boundary"]
+            subgraph ACA_Env ["Container Apps Environment"]
+                direction TB
+                
+                API["Public API App<br/>(Ingress: External)<br/>Port: 443"]
+                Worker["Background AI Processor<br/>(Ingress: Internal)<br/>Port: 8080"]
+                
+                API <-->|Private Internal Traffic| Worker
+            end
+        end
+        
+        LogAnalytics[("Azure Monitor /<br/>Log Analytics Workspace")]
+        Internet((Internet Client))
+    end
+architecture-beta
+    group azure(cloud)[Azure Cloud]
+    group vnet(cloud)[Virtual Network Boundary] in azure
+    group env(server)[ACA Environment] in vnet
+    
+    Internet -->|Public HTTPS| API
+    ACA_Env -->|Centralized Telemetry & Logs| LogAnalytics
+    service internet(internet)[Internet Client]
+    
+    service api(server)[Public API App] in env
+    service worker(server)[Background AI Processor] in env
+    
+    service logs(database)[Log Analytics Workspace] in azure
+    
+    internet:B --> T:api
+    api:R <--> L:worker
+    api:B --> T:logs
+    worker:B --> T:logs
+`} />
+
+### Flow Explanation
+1. **The Entry Point:** All inbound traffic from the internet hits the environment boundary.
+2. **External Ingress:** The public URL routes the HTTPS request to the **Public API App** (`--ingress external`).
+3. **Internal Routing:** When the API App needs to query the AI model, it routes privately to the **Background AI Processor** (`--ingress internal`).
+4. **Centralized Telemetry:** Both the API app and the Background worker stream their logs to a shared **Log Analytics Workspace**.
+
+## CLI Commands for Environments
+
+You can create an environment implicitly using `az containerapp up`, but creating it explicitly first provides precise control over naming conventions and lifecycle governance, which is vital when multiple apps must share the same environment.
+
+<Callout type="warning">
+**Prerequisite:** Azure Container Apps commands may require the Container Apps extension. Ensure it is installed and upgraded:
+`az extension add --name containerapp --upgrade`
+</Callout>
+
+### 1. Create a Resource Group and Environment
+This step establishes the physical location and management boundary for your application.
+
+```bash
+# Create the Resource Group
+az group create \
+  --name rg-aca-demo \
+  --location centralus
+
+# Create the Container Apps Environment
+az containerapp env create \
+  --name aca-env-demo \
+  --resource-group rg-aca-demo \
+  --location centralus
+```
+**Purpose:** Initializes the shared logical perimeter. Any container app deployed into `aca-env-demo` will automatically land in the same network context and can seamlessly integrate with the same Azure Monitor logs.
+
+### 2. Inspect the Environment
+Retrieves metadata and configuration details about an existing environment. 
+
+```bash
+# Show Environment Details
+az containerapp env show \
+  --name aca-env-demo \
+  --resource-group rg-aca-demo
+```
+**Purpose:** Use this command when troubleshooting region mismatches, validating network configurations, or confirming which environment an app is actively bound to.
+
+## Networking and Ingress
+
+Networking decisions determine how clients reach your AI services and how your microservices talk to one another. 
+
+When deploying a container app, you control the ingress routing using the `--ingress` flag:
+- `--ingress external`: Configures the app for public-facing traffic. Use this for your web clients or main API endpoints.
+- `--ingress internal`: Restricts access so the app is only reachable by other services *within the same environment*. Use this for background workers, embedding processors, or internal databases. 
+
+*Why it matters:* This simple decision massively influences your security posture. Internal ingress ensures your backend AI services are completely hidden from the public internet, reducing the attack surface while simplifying authentication.
+
+## Observability Integration
+
+AI applications heavily depend on data context, and failures are frequently data-dependent rather than code crashes. Azure Container Apps environments natively integrate with **Azure Monitor Logs** (Log Analytics).
+
+By grouping apps in an environment, you centralize container logs and system telemetry in a single workspace. This is critical for tracing requests that flow from your public API app to your background worker app, helping you quickly diagnose startup failures, misconfigurations, and downstream dependency errors. 
+
+Plan your log collection strategy early. Do not wait for a production failure to realize you lack consolidated logs.
+
+## Best Practices for Environment Design
+
+Designing your environments requires balancing isolation against operational simplicity. Follow these core principles for AI workloads:
+
+1. **Separate environments by lifecycle:** Never mix Development and Production in the same environment. Separate environments shrink the blast radius when validating new deployments or revisions.
+2. **Align environments to networking boundaries:** Services that need to communicate privately with high trust should reside in the same environment, leveraging `internal` ingress. 
+3. **Standardize naming conventions:** Enforce consistent naming patterns for resource groups, environments, and apps. Consistent naming ensures operational tooling and CI/CD pipelines can predictably discover resources.
+4. **Plan for observability:** Configure logging backends and define how logs will be queried *before* allowing production traffic. Centralized logging is a core feature of the environment boundary—use it.
+

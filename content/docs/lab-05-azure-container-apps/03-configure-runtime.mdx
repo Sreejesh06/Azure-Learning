@@ -1,0 +1,164 @@
+---
+title: 03 - Configure Runtime Settings & Secrets
+description: Master the 12-factor app configuration model in Azure Container Apps. Learn to securely inject environment variables, secret references, and Key Vault integration for AI workloads.
+---
+
+## Overview
+
+A fundamental rule of modern cloud-native engineering (often called the **12-Factor App** methodology) is a strict separation of *code* from *configuration*. 
+
+If you hardcode an OpenAI endpoint or an API key into your Python script, you have fundamentally broken the portability of your container. To move from Development to Production, you would be forced to rebuild the entire multi-gigabyte AI container image.
+
+Azure Container Apps (ACA) solves this by injecting configuration at **runtime** using Environment Variables and Secure Secrets. 
+
+---
+
+## Buzzword Breakdown
+
+*   **12-Factor App (Config):** The principle that everything that is likely to vary between deployments (Dev, Staging, Prod) should be stored in the environment, never in the code.
+*   **Secret Store:** A secure, encrypted vault managed by ACA where sensitive strings are held at rest.
+*   **Secret Reference (`secretref`):** A pointer. Instead of passing a password directly into an environment variable, you pass a pointer that tells the container runtime, *"Go fetch this secret from the vault just before the container boots."*
+*   **Azure Key Vault Integration:** Bypassing the local ACA secret store entirely to fetch secrets directly from Azure's enterprise-grade centralized vault using Managed Identities.
+
+---
+
+## The Runtime Injection Architecture
+
+How does an API key safely get from Azure into your Python code without being exposed in a GitHub repository or Azure Portal logs?
+
+<Mermaid chart={`
+%%{init: {'theme': 'default'}}%%
+flowchart TB
+    subgraph AzureControlPlane ["Azure Control Plane / ARM"]
+        ACA_Store[("ACA Encrypted<br/>Secret Store")]
+        YAML["Deployment YAML<br/>(GitOps)"]
+    end
+
+    subgraph Pod ["Running Container Instance (Runtime)"]
+        direction TB
+        Kubelet["Container Runtime Injector"]
+        
+        subgraph MemSpace ["Container Memory Space"]
+            OS_Env["OS Environment Variables<br/>(e.g., LOG_LEVEL, API_KEY)"]
+            App["Python AI Application<br/>os.getenv('API_KEY')"]
+        end
+    end
+
+    YAML -- "env: LOG_LEVEL=debug" --> Kubelet
+    YAML -- "env: API_KEY=secretref:my-api-key" --> Kubelet
+    ACA_Store -. "Decrypted at boot" .-> Kubelet
+    Kubelet ==>|Populates| OS_Env
+    OS_Env -->|Read at runtime| App
+    
+    classDef secure fill:#fff3cd,stroke:#ffc107,stroke-width:2px;
+    class ACA_Store secure;
+`} />
+
+### Flow Explanation
+1. **The Request:** Your GitOps YAML file tells the infrastructure to map the variable `API_KEY` to a secret reference (`secretref`).
+2. **The Interception:** At boot time, the container runtime (Kubelet layer) reads this instruction, securely connects to the encrypted **ACA Secret Store**, and pulls the decrypted value.
+3. **The Injection:** The orchestrator injects this raw string into the container's isolated **Memory Space** as an OS-level environment variable.
+4. **The Execution:** Your Python code simply calls `os.getenv('API_KEY')`, entirely unaware of the complex Azure vault mechanics happening underneath.
+
+---
+
+## Phase 1: Non-Sensitive Environment Variables
+
+Environment variables are ideal for flags, URLs, and operational tunings. For an AI workload, you might use them to control the batch size of an inference queue or to enable debug logging.
+
+You can inject these at creation time using `--env-vars`:
+
+```bash
+az containerapp create \
+  -n ai-api \
+  -g rg-aca-demo \
+  --environment aca-env-demo \
+  --image myregistry.azurecr.io/ai-api:v1 \
+  --ingress external \
+  --target-port 8000 \
+  --env-vars LOG_LEVEL=info FEATURE_EMBEDDINGS=true
+```
+
+If the app is already running and you need to debug a failing model *without* replacing the image, you use `--set-env-vars`. This triggers a new **Revision** (as discussed in Module 02).
+
+```bash
+# Safely updates the variable and rolls out a new revision
+az containerapp update \
+  -n ai-api \
+  -g rg-aca-demo \
+  --set-env-vars LOG_LEVEL=debug
+```
+
+---
+
+## Phase 2: Protecting Secrets
+
+API keys, database connection strings, and model signing weights are highly sensitive. If these leak, malicious actors can rack up massive bills on your cloud account. **Never** put these in standard environment variables, because standard environment variables are visible in the Azure Portal UI and ARM templates.
+
+Instead, push them into the ACA Secret Store:
+
+```bash
+az containerapp secret set \
+  -n ai-api \
+  -g rg-aca-demo \
+  --secrets embeddings-api-key="sk-abc123REDACTED"
+```
+
+<Callout type="info">
+**AI-200 Exam Tip - Key Vaults:** While ACA has its own secret store, enterprise environments require centralized auditing. You can configure ACA secrets to act as passthroughs to **Azure Key Vault**. When configured this way, ACA uses a Managed Identity to fetch the Key Vault secret at boot time, ensuring the actual value is never stored in ACA at all.
+</Callout>
+
+---
+
+## Phase 3: The Binding (Secret References)
+
+Your Python or Node.js code does not know how to talk to the ACA Secret Store natively. It only knows how to read OS-level environment variables (e.g., `os.environ.get('EMBEDDINGS_API_KEY')`).
+
+To bridge this gap securely, you use a **Secret Reference**. You map an OS environment variable to the secret you created in Phase 2 using the `secretref:` keyword.
+
+```bash
+az containerapp update \
+  -n ai-api \
+  -g rg-aca-demo \
+  --set-env-vars EMBEDDINGS_API_KEY=secretref:embeddings-api-key
+```
+
+**What happens mechanically?**
+When the container boots, the Azure container runtime intercepts the `secretref:` instruction, retrieves the decrypted value from the secret store, and securely injects it into the container's memory space as `EMBEDDINGS_API_KEY`. 
+
+---
+
+## Phase 4: Standardizing with YAML (GitOps)
+
+When you move to a CI/CD pipeline, configuring variables and secrets via CLI flags becomes brittle. You standardize this using a YAML deployment file.
+
+**Crucial Security Rule:** Your YAML file will be committed to a git repository. It must *never* contain the actual secret values. It should only contain the `secretRef` mapping. 
+
+```yaml
+# containerapp.yml (Safe to commit to GitHub)
+properties:
+  template:
+    containers:
+      - name: ai-api
+        image: myregistry.azurecr.io/ai-api:v2
+        env:
+          # Non-sensitive variable (Plain text is fine)
+          - name: LOG_LEVEL
+            value: info
+            
+          # Sensitive variable (Pointer only, actual value is in Azure)
+          - name: EMBEDDINGS_API_KEY
+            secretRef: embeddings-api-key
+```
+
+Apply the configuration:
+
+```bash
+az containerapp update -n ai-api -g rg-aca-demo --yaml ./containerapp.yml
+```
+
+### Strategic Summary for AI Workloads
+By decoupling your configuration from your container image:
+1. You can run the exact same AI inference image in your Dev environment (using a mock API key) and your Prod environment (using a live API key).
+2. If an API key is compromised, you can rotate the secret in Azure and simply restart the app—no code changes, no image rebuilding, and no pipelines to re-run.
+
