@@ -5,7 +5,8 @@
     "01-explore-environments",
     "02-deploy-container-app",
     "03-configure-runtime",
-    "04-connect-to-registries"
+    "04-connect-to-registries",
+    "05-verify-deployment"
   ]
 }
 
