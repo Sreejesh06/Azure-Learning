@@ -1,0 +1,63 @@
+---
+title: Summary
+---
+
+# Summary: Properly Hosting Azure Container Apps
+
+In this module, you learned that deploying a container is just the beginning. The real challenge of AI cloud solutions is day-two operations: managing the lifecycle, tuning resources, and rapidly troubleshooting issues. 
+
+Here is the complete picture of how an Azure Container App is "properly hosted" in a production environment:
+
+```mermaid
+flowchart TD
+    %% Define styles for Azure resources
+    classDef acr fill:#0072C6,stroke:#0072C6,color:#fff,rx:5px
+    classDef aca fill:#762C9D,stroke:#762C9D,color:#fff,rx:5px
+    classDef logAnalytics fill:#68217A,stroke:#68217A,color:#fff,rx:5px
+    classDef ingress fill:#FFB900,stroke:#FFB900,color:#333,rx:5px
+    
+    User([🌐 End Users])
+
+    subgraph "Azure Container Apps Environment (Security Boundary)"
+        Ingress[🚦 Managed Ingress / Load Balancer]:::ingress
+        
+        subgraph "AI API (Container App)"
+            Rev1[📄 Old Revision<br>(Traffic: 0%)]:::aca
+            Rev2[🚀 New Revision<br>(Traffic: 100%)]:::aca
+        end
+    end
+
+    ACR[(🐳 Azure Container Registry<br>Images: amd64)]:::acr
+    LogAnalytics[(📊 Log Analytics Workspace<br>Historical DVR)]:::logAnalytics
+
+    %% Relationships
+    User -- HTTPS --> Ingress
+    Ingress -- Routes Traffic --> Rev2
+    Ingress -. Shift Traffic .-> Rev1
+    
+    ACR -- Pulls Image --> Rev2
+    
+    Rev1 -- Streams Logs --> LogAnalytics
+    Rev2 -- Streams Logs --> LogAnalytics
+```
+
+### Key Takeaways for Proper Hosting
+
+1. **Architecture & Revisions**: 
+   A properly hosted Container App doesn't just overwrite itself. Every configuration change or code update creates a new, immutable **Revision**. This enables zero-downtime deployments and instant rollbacks if a bad environment variable takes down the app.
+   
+2. **Resource Optimization**: 
+   - **CPU**: Think of it as the worker's processing speed. Starve it, and you get throttling (slow APIs).
+   - **RAM**: Think of it as the desk space. Starve it, and you get Out Of Memory (OOM) crashes.
+   
+3. **Health Probes**:
+   Never deploy without them. 
+   - **Readiness Probes** tell the load balancer, *"Don't send me traffic yet, my AI models are still loading!"*
+   - **Liveness Probes** tell the platform, *"I'm permanently stuck, please kill me and restart."*
+
+4. **Debugging Mindset (Live TV vs. DVR)**:
+   - Use `az containerapp logs show` for real-time, live debugging when actively developing.
+   - Use **Log Analytics** with KQL (`az monitor log-analytics query`) to search historical logs, find errors that happened overnight, and analyze trends across multiple container restarts.
+
+### Cleanup Complete
+The `aca-lab06` resource group has been successfully submitted for deletion. It will disappear from your Azure account shortly, stopping any further billing.
