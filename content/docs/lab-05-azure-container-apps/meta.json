@@ -6,7 +6,8 @@
     "02-deploy-container-app",
     "03-configure-runtime",
     "04-connect-to-registries",
-    "05-verify-deployment"
+    "05-verify-deployment",
+    "06-hands-on-deployment-guide"
   ]
 }
 

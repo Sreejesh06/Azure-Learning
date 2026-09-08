@@ -1,0 +1,178 @@
+---
+title: "Lab 05: Deploy a Containerized API to Azure Container Apps"
+description: "A comprehensive hands-on guide to deploying a Python backend API to Azure Container Apps, including real-world debugging of policies, architectures, and caching."
+---
+
+# Deploy a Containerized API to Azure Container Apps
+
+In this lab, we deploy a containerized backend API to **Azure Container Apps**. Rather than using automated scripts, we walk through the manual Azure CLI steps to thoroughly understand the infrastructure.
+
+We will also explore and solve real-world cloud engineering hurdles such as Azure policies, CPU architecture mismatches (Apple Silicon vs Cloud), image caching, and Express Environment limitations.
+
+---
+
+## 1. Environment Setup
+
+First, install the necessary Azure CLI extensions and register the Resource Providers so your subscription is allowed to create these resources:
+
+```bash
+az extension add --name containerapp
+az extension add --name log-analytics
+az provider register --namespace Microsoft.App
+az provider register --namespace Microsoft.OperationalInsights
+az provider register --namespace Microsoft.ContainerRegistry
+```
+
+Next, set up environment variables to make the commands reusable. 
+
+> **Important Concept - Variable Evaluation:** In bash/zsh, variables are evaluated at the moment they are exported. If you change `UNIQUE_ID` later, you **must** re-export `ACR_NAME` and `ACR_SERVER` so they pick up the new value!
+
+```bash
+export UNIQUE_ID="20098"  # Change to random numbers to ensure global uniqueness
+export RESOURCE_GROUP="rg-aca-lab"
+export LOCATION="eastasia" 
+export ACR_NAME="acr$UNIQUE_ID"
+export ACA_ENVIRONMENT="aca-env-$UNIQUE_ID"
+export CONTAINER_APP_NAME="ai-api"
+export CONTAINER_IMAGE="ai-api:v2"
+export TARGET_PORT="8000"
+export MODEL_NAME="gpt-5.4-mini"
+export EMBEDDINGS_API_KEY="demo-key-12345"
+export ACR_SERVER="$ACR_NAME.azurecr.io"
+```
+
+---
+
+## 2. Resource Group and Container Registry
+
+Create the resource group to hold our resources.
+
+```bash
+az group create --name $RESOURCE_GROUP --location $LOCATION
+```
+
+Next, create an **Azure Container Registry (ACR)**. This acts as a private secure vault for your Docker images.
+
+```bash
+az acr create --resource-group $RESOURCE_GROUP --name $ACR_NAME --sku Basic --admin-enabled false
+```
+
+### Real-World Error: `RequestDisallowedByAzure`
+If you are using an **Azure for Students** or free tier subscription, you might encounter this error when trying to deploy to US regions (like `eastus` or `westus`):
+```text
+Resource 'acr123' was disallowed by Azure: This policy maintains a set of best available regions...
+```
+**Why:** Microsoft applies policies to student accounts restricting high-demand regions to prevent capacity issues.
+**The Fix:** Use student-friendly regions like `eastasia`, `centralindia`, `swedencentral`, or `japaneast`. (Update your `$LOCATION` variable and recreate the Resource Group).
+
+---
+
+## 3. Building and Pushing the Docker Image
+
+Normally, you would use ACR Tasks (`az acr build`) to build the image in the cloud. However, **ACR Tasks are disabled for free/student accounts** to prevent crypto-mining abuse (yielding a `TasksOperationsNotAllowed` error).
+
+**The Fix:** Build the image locally using Docker Desktop and push it to Azure.
+
+First, seamlessly link your local Docker to Azure:
+```bash
+az acr login --name $ACR_NAME
+```
+
+### Real-World Error: `Unsupported image platform: architecture=arm64`
+If you are on an Apple Silicon Mac (M1/M2/M3), running a standard `docker build` will create an `arm64` image. However, Azure Container Apps defaults to standard Intel/AMD processors (`amd64`). If you deploy an `arm64` image, the container will crash.
+
+**The Fix:** Use Docker's BuildKit to cross-compile the image for Linux/AMD64 using the `--platform` flag.
+
+```bash
+# Ensure you are in the directory containing the `api/` folder and Dockerfile
+docker build --platform linux/amd64 -t $ACR_NAME.azurecr.io/$CONTAINER_IMAGE api/
+
+# Push to Azure
+docker push $ACR_NAME.azurecr.io/$CONTAINER_IMAGE
+```
+
+### Real-World Error: Azure Image Tag Caching
+If you deploy a broken image (like the `arm64` one), Azure Container Apps will cache the manifest. If you rebuild the correct `amd64` image and push it using the *exact same tag* (e.g., `:v1`), Azure will often reuse the broken cached version!
+**The Fix:** Always bump your tags (e.g., update `$CONTAINER_IMAGE` to `ai-api:v2`) when pushing fixes.
+
+---
+
+## 4. Deploying to Container Apps
+
+Create the **Container Apps Environment**. This provides a fully managed Kubernetes-like cluster boundary with a shared virtual network and Log Analytics workspace.
+
+```bash
+az containerapp env create --name $ACA_ENVIRONMENT --resource-group $RESOURCE_GROUP --location $LOCATION
+```
+
+### Real-World Error: `ExpressEnvironmentFeatureNotSupported`
+Azure uses "Express Environments" in certain regions/tiers to save costs. These environments **do not support System-Assigned Managed Identities** for ACR authentication.
+
+**The Fix:** We must fallback to using the ACR's Admin Username and Password.
+
+1. Enable the admin account on the registry:
+```bash
+az acr update -n $ACR_NAME --admin-enabled true
+```
+2. Store the password in a variable:
+```bash
+export ACR_PASSWORD=$(az acr credential show -n $ACR_NAME --query "passwords[0].value" -o tsv)
+```
+
+Now, deploy the Container App passing the credentials directly:
+
+```bash
+az containerapp create \
+  --name $CONTAINER_APP_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --environment $ACA_ENVIRONMENT \
+  --image "$ACR_SERVER/$CONTAINER_IMAGE" \
+  --ingress external \
+  --target-port $TARGET_PORT \
+  --registry-server "$ACR_SERVER" \
+  --registry-username $ACR_NAME \
+  --registry-password $ACR_PASSWORD
+```
+*(Notice `--ingress external` automatically sets up HTTPS and a public load balancer).*
+
+---
+
+## 5. Configuring Secrets Securely
+
+We must securely store API keys rather than exposing them as plain text environment variables. We store the key in the Container App's secret store, then bind an environment variable (`EMBEDDINGS_API_KEY`) to it.
+
+1. Store the secret:
+```bash
+az containerapp secret set -n $CONTAINER_APP_NAME -g $RESOURCE_GROUP \
+  --secrets embeddings-api-key=$EMBEDDINGS_API_KEY
+```
+
+2. Update the app configuration:
+*(Note: Updating configuration automatically restarts the app and creates a new Revision).*
+```bash
+az containerapp update -n $CONTAINER_APP_NAME -g $RESOURCE_GROUP \
+  --set-env-vars MODEL_NAME=$MODEL_NAME EMBEDDINGS_API_KEY=secretref:embeddings-api-key
+```
+
+---
+
+## 6. Verify and Cleanup
+
+Grab your live, public FQDN (Fully Qualified Domain Name) and test the endpoints:
+
+```bash
+export FQDN=$(az containerapp show -n $CONTAINER_APP_NAME -g $RESOURCE_GROUP --query properties.configuration.ingress.fqdn -o tsv)
+echo "Your app is live at: https://$FQDN"
+
+# Verify health
+curl -s "https://$FQDN/health"
+
+# Verify the secret is properly loaded
+curl -s "https://$FQDN/"
+```
+
+Once verified, clean up the resources so you don't incur Pay-As-You-Go charges. Deleting the Resource Group deletes everything inside it.
+
+```bash
+az group delete --name $RESOURCE_GROUP --no-wait --yes
+```
