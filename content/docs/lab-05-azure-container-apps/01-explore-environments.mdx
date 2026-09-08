@@ -37,24 +37,6 @@ flowchart TB
         LogAnalytics[("Azure Monitor /<br/>Log Analytics Workspace")]
         Internet((Internet Client))
     end
-architecture-beta
-    group azure(cloud)[Azure Cloud]
-    group vnet(cloud)[Virtual Network Boundary] in azure
-    group env(server)[ACA Environment] in vnet
-    
-    Internet -->|Public HTTPS| API
-    ACA_Env -->|Centralized Telemetry & Logs| LogAnalytics
-    service internet(internet)[Internet Client]
-    
-    service api(server)[Public API App] in env
-    service worker(server)[Background AI Processor] in env
-    
-    service logs(database)[Log Analytics Workspace] in azure
-    
-    internet:B --> T:api
-    api:R <--> L:worker
-    api:B --> T:logs
-    worker:B --> T:logs
 `} />
 
 ### Flow Explanation
