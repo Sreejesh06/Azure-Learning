@@ -1,0 +1,151 @@
+---
+title: 03 - Implement event-driven scaling with KEDA
+description: Learn how to scale Azure Container Apps using event-driven triggers like Azure Service Bus, Storage Queues, and Event Hubs via KEDA.
+---
+
+## Visual Flow
+
+<Mermaid chart={`
+architecture-beta
+    group external(cloud)[External Event Sources]
+    service servicebus(database)[Azure Service Bus] in external
+    service storagequeue(database)[Storage Queue] in external
+    service eventhub(database)[Event Hub] in external
+
+    group aca(cloud)[Azure Container Apps]
+    service keda(server)[KEDA Scaler] in aca
+    service worker1(server)[Worker Replica 1] in aca
+    service worker2(server)[Worker Replica 2] in aca
+    
+    keda:T -- B:servicebus
+    keda:T -- B:storagequeue
+    keda:T -- B:eventhub
+    
+    keda:R -- L:worker1
+    keda:R -- L:worker2
+`} />
+
+This diagram shows how the KEDA scaler inside Azure Container Apps constantly polls external event sources (like message queues or event streams). When messages pile up in the queue, KEDA automatically spins up worker replicas to process the backlog, and scales them back to zero when the queue is empty.
+
+## Understand KEDA Integration
+
+Event-driven scaling is built for background processing. If you have an app that just sits in the background processing messages from a queue, scaling based on HTTP requests won't work (because it doesn't receive HTTP traffic). 
+
+Instead, Azure Container Apps uses **KEDA (Kubernetes Event-driven Autoscaling)**. KEDA monitors external sources (like a Service Bus queue), looks at metrics like queue depth, and adjusts your replicas. 
+- **Polling:** KEDA polls the event source every 30 seconds.
+- **Scale-to-zero:** If there is no work to do, ACA will scale your application down to 0, which is perfect for cost-saving on background tasks. New messages trigger an automatic scale-up.
+- **Scalers:** Microsoft provides built-in "scalers" for Azure services (Service Bus, Storage Queues, Event Hubs, etc.), but community scalers are also available.
+
+## The Big Three: Which One to Choose?
+
+Before configuring the scalers, it's crucial to understand the difference between the three primary event sources in Azure. Here is the stripped-down technical comparison based on how data is consumed:
+
+- **Storage Queue:** `[Msg] ──> [One-Way Buffer] ──> Destructive Read` (1 Worker gets it, it's gone)
+- **Service Bus:** `[Msg] ──> [Enterprise Broker] ──> Stateful Processing` (Sessions, Topics, Dead-letters)
+- **Event Hubs:** `[Msg] ──> [Log Stream] ──> Non-Destructive Read` (Data stays; multiple apps replay it)
+
+### Azure Storage Queue (The Volatile Task Buffer)
+- **How it works:** A simple HTTP/REST-based FIFO-ish line. When a consumer reads a message, it hides the message from others. If the consumer finishes successfully, the message is permanently deleted.
+- **Key Behavior:** Destructive, single-consumer processing.
+- **Best Scenario:** Decoupling monolithic web servers from background workers (e.g., A user clicks "Download PDF". The web server pushes a task to the queue. A worker picks it up, generates the PDF, and deletes the message).
+
+### Azure Service Bus (The Stateful Enterprise Broker)
+- **How it works:** An AMQP-based message broker built for complex application integration. It tracks state, enforces strict ordering via message sessions, provides transactional guarantees, and routes single messages to multiple destinations using Topics and Subscriptions.
+- **Key Behavior:** Stateful coordination, strict logic, and transaction boundaries.
+- **Best Scenario:** E-commerce checkout pipelines or financial ledger updates (e.g., A user purchases an item. The inventory service deducts stock while the payment service charges the card in a reliable, ordered sequence).
+
+### Azure Event Hubs (The Append-Only Log Stream)
+- **How it works:** A distributed, partitioned append-only commit log. Consumers don't pull messages out of the queue; they move a pointer (offset) across a continuous timeline of data. Reading data does not delete it.
+- **Key Behavior:** High-throughput streaming, non-destructive reads, and time-travel replay.
+- **Best Scenario:** Real-time telemetry, IoT ingestion, or application log aggregation (e.g., 10,000 smart microcontrollers sending temperature readings every 500ms. A dashboard reads the stream for live charts, while an anomaly detection system reads the same stream simultaneously).
+
+> [!TIP]
+> **The 1-Sentence Selection Rule:** Choose **Storage Queues** for lightweight, independent task lists; choose **Service Bus** for complex, reliable business transactions; choose **Event Hubs** for raw, high-velocity data streams.
+
+## 1. Configure Azure Service Bus Scaling
+
+This triggers scaling based on the number of messages in a Service Bus queue or topic subscription. 
+
+**How the math works:** You configure a `messageCount` threshold. If you set `messageCount` to 5, and there are 50 messages sitting in the queue, KEDA will request 10 replicas (50 / 5) to handle the load.
+
+**Example (Azure CLI):** Scaling an order processor using a Service Bus queue.
+
+```bash
+az containerapp create \
+  --name order-processor \
+  --resource-group rg-ecommerce \
+  --environment my-environment \
+  --image myregistry.azurecr.io/order-processor:v1 \
+  --min-replicas 0 \
+  --max-replicas 30 \
+  --secrets "sb-connection=<SERVICE_BUS_CONNECTION_STRING>" \
+  --scale-rule-name servicebus-scaling \
+  --scale-rule-type azure-servicebus \
+  --scale-rule-metadata "queueName=orders" \
+                        "namespace=sb-ecommerce" \
+                        "messageCount=5" \
+  --scale-rule-auth "connection=sb-connection"
+```
+*(Note: If using topics instead of queues, change `queueName` to `topicName` and add a `subscriptionName` parameter.)*
+
+## 2. Configure Azure Storage Queue Scaling
+
+Storage Queues are a simpler, cheaper alternative to Service Bus. You don't get advanced features (like sessions or dead-letter queues), but the scaling concept is exactly the same. 
+
+You set a `queueLength` parameter (identical in concept to `messageCount`), and KEDA monitors the approximate message count to spin up replicas.
+
+**Example (Azure CLI with Managed Identity):** Scaling a simple inventory-updates processor securely without connection strings.
+
+```bash
+az containerapp create \
+  --name queue-processor \
+  --resource-group rg-ecommerce \
+  --environment my-environment \
+  --image myregistry.azurecr.io/queue-processor:v1 \
+  --user-assigned <MANAGED_IDENTITY_RESOURCE_ID> \
+  --min-replicas 0 \
+  --max-replicas 20 \
+  --scale-rule-name storage-queue-scaling \
+  --scale-rule-type azure-queue \
+  --scale-rule-metadata "accountName=stecommerce" \
+                        "queueName=inventory-updates" \
+                        "queueLength=10" \
+  --scale-rule-identity <MANAGED_IDENTITY_RESOURCE_ID>
+```
+
+## 3. Configure Azure Event Hubs Scaling
+
+Event Hubs is for massive, high-throughput streaming. Instead of counting individual messages in a queue, the Event Hubs scaler monitors the **"lag"** (unprocessed events) between the latest event and your consumer group's checkpoint.
+
+**The Major Gotcha (Partitions):** Your maximum effective replicas are tied directly to the number of partitions in your Event Hub. If your Event Hub only has 32 partitions, setting your `maxReplicas` to anything higher than 32 provides no additional scaling benefit. You can only have one consumer per partition.
+
+**Example (YAML):** Configuring Event Hubs scaling with checkpoint-based lag monitoring.
+
+```yaml
+scale:
+  minReplicas: 0
+  maxReplicas: 32
+  rules:
+    - name: eventhubs-scaling
+      custom:
+        type: azure-eventhub
+        metadata:
+          consumerGroup: "$Default"
+          unprocessedEventThreshold: "64"
+          checkpointStrategy: "blobMetadata" # Recommended for blob storage checkpoints
+      auth:
+        - secretRef: eh-connection
+          triggerParameter: connection
+```
+
+## Authentication for Scale Rules
+
+KEDA needs to authenticate against the event source to read the metrics. Azure Container Apps supports two methods:
+1. **Secrets-based (Connection Strings):** You store a connection string as a secret in the Container App, and map it to the scale rule (as seen in the Service Bus example). This works, but rotating secrets manually is a headache.
+2. **Managed Identity (The Best Practice):** You assign a managed identity to your app, grant it RBAC permissions (like 'Azure Service Bus Data Receiver'), and the scaler uses that identity directly (as seen in the Storage Queue example). This eliminates the need for passwords entirely!
+
+## Best Practices
+- **Use Managed Identity:** Always prefer this for production. It removes secret management overhead and significantly improves your security posture.
+- **Do the Math on Thresholds:** If 1 message takes 10 seconds to process, and you want 100 messages processed per minute, you need exactly 10 replicas running concurrently. Set your `messageCount` threshold to achieve that specific math so you don't over-provision and waste money.
+- **Always Scale Background Workers to Zero:** This is where you save the most money. If the queue is empty, pay for absolutely nothing. New messages will automatically trigger a scale-up.
+- **Monitor Queue Depth vs. Replicas:** Use Azure Monitor to correlate the two. If the queue grows faster than replicas scale, lower your threshold. If replicas sit idle, raise it.

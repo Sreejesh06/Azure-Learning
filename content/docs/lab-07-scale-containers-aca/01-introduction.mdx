@@ -1,0 +1,48 @@
+---
+title: 01 - Introduction
+description: Introduction to scaling containers in Azure Container Apps
+---
+
+## Visual Flow
+
+<Mermaid chart={`
+architecture-beta
+    group containerapps(cloud)[Azure Container Apps]
+    service orderapi(server)[Order Processing API] in containerapps
+    service worker(server)[Background Worker] in containerapps
+    
+    group external(cloud)[External]
+    service users(server)[HTTP Traffic] in external
+    service servicebus(database)[Azure Service Bus] in external
+    
+    users:R -- L:orderapi
+    servicebus:R -- L:worker
+`} />
+
+The flow above shows a typical e-commerce order processing architecture. We have synchronous HTTP traffic hitting the Order Processing API from the outside world, and an asynchronous background worker pulling messages from an Azure Service Bus queue. Both of these components live inside Azure Container Apps and need distinct scaling behaviors to handle unpredictable traffic bursts while scaling all the way down to zero during idle times to save costs.
+
+## What's the Problem?
+
+Imagine you are building this order processing service for an e-commerce platform. Your application sees predictable traffic spikes during big sales, and totally unpredictable bursts when marketing campaigns drop. 
+
+If your current deployment uses fixed resources, you run into two major issues:
+1. **Poor response times:** During peak periods, your fixed resources get overwhelmed. Customer complaints start rolling in about slow checkout times during flash sales.
+2. **Wasted money:** During quiet hours, your app just sits there doing nothing, but operations is reporting massive bills because the application runs at full capacity around the clock.
+
+## The Solution: Automatic Scaling
+
+By implementing automatic scaling in Azure Container Apps, we can solve both problems. We need the application to:
+- Scale out rapidly when HTTP requests increase.
+- Process messages efficiently from Azure Service Bus queues during order fulfillment.
+- Scale back down to zero during idle periods to minimize costs.
+
+The platform needs to handle both synchronous API traffic and asynchronous background processing, each requiring different scaling behaviors. Leadership expects this solution to reduce infrastructure costs by at least 40% while keeping response times under 200 milliseconds during peak load.
+
+## What We Are Going to Build and Learn
+
+In this lab, we are going to dive deep into configuring automatic horizontal scaling to build a responsive, cost-efficient container deployment. By the end, you will know how to:
+
+- Configure HTTP, TCP, CPU, and memory scale rules for your container apps.
+- Implement event-driven scaling using KEDA scalers for Azure services (like Service Bus).
+- Select the right compute resources to optimize both performance and cost.
+- Apply revision modes to control scaling behavior and manage traffic distribution.

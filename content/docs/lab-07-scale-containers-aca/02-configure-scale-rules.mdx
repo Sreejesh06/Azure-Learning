@@ -1,0 +1,103 @@
+---
+title: 02 - Configure Scale Rules
+description: Learn how to configure HTTP, TCP, CPU, and Memory scaling in Azure Container Apps
+---
+
+## Visual Flow
+
+<Mermaid chart={`
+architecture-beta
+    group traffic(cloud)[Traffic / Load]
+    service http(server)[HTTP Requests] in traffic
+    service tcp(server)[TCP Connections] in traffic
+    service cpu(server)[CPU / Memory load] in traffic
+
+    group aca(cloud)[Azure Container Apps]
+    service keda(server)[KEDA Scaler] in aca
+    service replica1(server)[Replica 1] in aca
+    service replica2(server)[Replica 2] in aca
+    service replica3(server)[Replica 3] in aca
+    
+    keda:T -- B:http
+    keda:T -- B:tcp
+    keda:T -- B:cpu
+    
+    keda:R -- L:replica1
+    keda:R -- L:replica2
+    keda:R -- L:replica3
+`} />
+
+The flow above shows how KEDA (Kubernetes Event-driven Autoscaling) sits inside Azure Container Apps. It constantly polls your defined triggers (HTTP, TCP, or CPU/Memory) and automatically provisions or terminates replicas based on the thresholds you define. 
+
+## Understand Scale Definitions
+
+Scale definitions in Azure Container Apps consist of three main components:
+1. **Limits:** The minimum and maximum number of replicas allowed.
+2. **Rules:** The triggers that determine when scaling occurs (e.g., 50 concurrent HTTP requests).
+3. **Behavior:** The polling intervals and cool-down periods used to make scaling decisions.
+
+If ingress is disabled and you do not specify a minimum replica count or custom rule, your app scales to zero and cannot restart because there is no trigger. Billing is strictly based on the replica count. When scaled to zero, you incur zero compute charges.
+
+## HTTP Scale Rules
+
+HTTP scaling adjusts replicas based on concurrent HTTP requests. The platform calculates this by counting the requests received over the past 15 seconds and dividing by 15. The default threshold is 10 requests per replica. 
+
+This type supports scale-to-zero. 
+
+**Why:** You want to deploy an order API that scales up when concurrent HTTP requests exceed 50 per replica, and can scale to zero when no traffic exists.
+
+```bash
+az containerapp create \
+  --name order-api \
+  --resource-group rg-ecommerce \
+  --environment my-environment \
+  --image myregistry.azurecr.io/order-api:v1 \
+  --min-replicas 0 \
+  --max-replicas 10 \
+  --scale-rule-name http-scaling \
+  --scale-rule-type http \
+  --scale-rule-http-concurrency 50
+```
+
+## TCP Scale Rules
+
+TCP scaling is for persistent connections, not short-lived HTTP cycles. Think WebSocket servers, database connection pools, or gRPC services. It uses the same 15-second averaging window and also supports scale-to-zero.
+
+## CPU and Memory Scale Rules
+
+Resource-based scaling triggers when the average CPU or Memory utilization exceeds a percentage threshold. 
+
+**Critical Limitation:** CPU and Memory rules CANNOT scale to zero. The platform requires at least one running replica to actually measure the utilization. If you need scale-to-zero, you must combine resource scaling with HTTP or event-driven rules.
+
+**Why:** You want to configure scaling directly via YAML to combine HTTP and CPU rules, ensuring that the app scales if HTTP concurrency hits 100 OR CPU hits 70%.
+
+```yaml
+scale:
+  minReplicas: 1
+  maxReplicas: 20
+  rules:
+    - name: http-scaling
+      http:
+        metadata:
+          concurrentRequests: "100"
+    - name: cpu-scaling
+      custom:
+        type: cpu
+        metadata:
+          type: Utilization
+          value: "70"
+```
+
+## Understand Scale Behavior (Timing Parameters)
+
+The algorithm uses specific timing parameters to prevent thrashing:
+- **Polling interval:** 30 seconds for custom scalers (CPU/Memory), 15 seconds for HTTP/TCP.
+- **Cool-down period:** The platform waits a default of 300 seconds (5 minutes) after the last scaling event before it scales down to zero. 
+- **Scale-up stabilization:** Zero seconds. It scales up immediately in steps of 1, 4, 8, 16, 32.
+- **Scale-down stabilization:** 300 seconds. When it finally scales down, all unneeded replicas shut down at once.
+
+## Best Practices
+- **Production Minimums:** Set `min-replicas` to at least 1 for production to avoid cold start latency. Only scale to zero for dev environments or truly intermittent workloads.
+- **API Workloads:** Default to HTTP scaling for web APIs because it is the most responsive and supports scaling to zero.
+- **Combine Rules:** Use multiple rules (e.g., HTTP + CPU) to handle different traffic patterns effectively.
+- **Beware the Cool-down:** The 5-minute cool-down means brief traffic spikes will leave replicas running (and costing money) for at least 5 minutes after traffic drops.

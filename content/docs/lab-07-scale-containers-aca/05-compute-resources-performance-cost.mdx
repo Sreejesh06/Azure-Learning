@@ -1,0 +1,63 @@
+---
+title: 05 - Select compute resources for performance and cost
+description: Learn how to configure CPU, memory, and workload profiles in Azure Container Apps to optimize for both performance and cost.
+---
+
+## 1. The Rules of Resource Allocation
+
+In Azure Container Apps, you configure resources (CPU and Memory) at the **container level**. 
+
+There is one golden rule you must memorize: **Memory (in GiB) must be at least twice the CPU value.**
+*   **Valid:** 0.5 CPU and 1.0 GiB Memory
+*   **Invalid:** 1.0 CPU and 1.0 GiB Memory (Memory must be at least 2.0)
+
+### What happens when you hit limits?
+*   **Memory Limit Hit:** The platform **terminates and restarts** the replica (Hard Failure / OOMKilled).
+*   **CPU Limit Hit:** The platform **throttles** the replica (Performance Degradation, but it stays alive).
+
+> [!TIP]
+> The default allocation is **0.25 CPU cores and 0.5 GiB memory**. Start here and scale up only if you see throttling or memory errors!
+
+## 2. Configure Container Resources
+
+You can set these limits easily via the Azure CLI using the `--cpu` and `--memory` flags.
+
+**Example (Azure CLI):**
+```bash
+az containerapp create \
+  --name order-api \
+  --resource-group rg-ecommerce \
+  --environment my-environment \
+  --image myregistry.azurecr.io/order-api:v1 \
+  --cpu 0.5 \
+  --memory 1.0Gi \
+  --min-replicas 2 \
+  --max-replicas 20
+```
+*Total Capacity Math:* If this app hits its max, 20 replicas × 0.5 CPU = **10 Total CPU Cores** of processing power.
+
+## 3. Workload Profiles: Consumption vs Dedicated
+
+Your environment type dictates how you are billed and what hardware you can access.
+
+### The Consumption Plan (Serverless)
+*   **How it works:** You pay exactly for the vCPU-seconds and GiB-seconds your replicas consume.
+*   **Limits:** Maximum of **4 cores and 8 GiB memory** per container.
+*   **Best For:** Intermittent workloads, web APIs, and anything that can benefit from scaling to zero.
+
+### Dedicated Workload Profiles
+*   **How it works:** You provision specific VM sizes reserved exclusively for your workloads.
+*   **Best For:** Consistent high-traffic workloads, strict latency requirements (bypasses serverless variability), **GPU workloads**, or if you need **more than 4 cores / 8 GiB RAM**.
+
+## 4. Optimizing for Cost vs Performance
+
+### Cost Optimization
+*   **Scale to Zero:** The ultimate cost-saver. If `min-replicas 0` is set, you pay absolutely nothing for compute when idle.
+*   **Active vs Idle Rates:** If your app is scaled up but not actively processing requests, you are billed at a significantly lower "idle rate."
+*   **Right-sizing:** Don't guess. Deploy with defaults, monitor Azure Monitor for actual CPU/Memory usage, and adjust. Over-provisioning wastes money.
+
+### Performance Optimization
+*   **Cold Starts:** If your app scales from zero, the very first user experiences a delay (cold start) while the container spins up. If this is a user-facing API where latency matters, set `--min-replicas 1` to guarantee immediate availability.
+*   **The Replica Sizing Trade-off:** 
+    *   **Large Replicas:** Fewer replicas needed. Less scaling overhead (less spinning up/down). But, scaling is "coarse" (you might add 2 cores of power when you only needed 0.5).
+    *   **Small Replicas:** Highly precise scaling. But, the platform has to constantly spin up and tear down containers, adding management overhead.

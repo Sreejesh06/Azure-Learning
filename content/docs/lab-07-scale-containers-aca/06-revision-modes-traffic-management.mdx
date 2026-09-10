@@ -1,0 +1,82 @@
+---
+title: 06 - Choose and apply revision modes
+description: Learn how to manage revisions, traffic splitting, and zero-downtime deployments in Azure Container Apps.
+---
+
+## 1. Understanding Revisions
+
+A **revision** is an immutable (unchangeable) snapshot of your container app. If you change core settings, Azure creates a *new* revision rather than editing the old one. This makes rolling back incredibly reliable.
+
+**What triggers a new revision? (Revision-scope changes)**
+*   New container image tags
+*   Environment variables
+*   Scale rules
+
+**What DOESN'T trigger a new revision? (Application-scope changes)**
+*   Secrets
+*   Ingress (networking) settings
+*   Traffic splitting rules
+
+## 2. Single Revision Mode (The Default)
+
+In this mode, only **one** revision is active at a time. 
+
+**How Deployments Work (Zero-Downtime):**
+1. You deploy a new version.
+2. Azure keeps the old version running and handling traffic.
+3. The new version boots up and passes health checks.
+4. Traffic shifts 100% to the new version automatically.
+5. The old version is killed.
+
+> [!TIP]
+> Use Single Revision Mode for 90% of your apps. It provides zero-downtime deployments automatically without any complex configuration!
+
+## 3. Multiple Revision Mode
+
+This mode allows multiple revisions to run simultaneously. You manually control which ones are active and how traffic is distributed. 
+
+**Why use this?**
+*   **Canary Deployments:** Send 5% of real users to the new version to test for bugs before rolling it out to 100%.
+*   **Blue-Green Deployments:** Have a "Staging" and "Production" environment running side-by-side.
+*   **A/B Testing:** Test two completely different versions of a feature.
+
+**Enable Multiple Revisions:**
+```bash
+az containerapp update \
+  --name order-api \
+  --resource-group rg-ecommerce \
+  --revision-mode multiple
+```
+
+### Traffic Splitting
+
+You distribute traffic using percentage weights.
+
+**Example: Splitting traffic 80/20 between v1 and v2:**
+```bash
+az containerapp ingress traffic set \
+  --name order-api \
+  --resource-group rg-ecommerce \
+  --revision-weight order-api--v1=80 order-api--v2=20
+```
+
+> [!IMPORTANT]
+> **The `latest` keyword:** You can set a weight pointing to `latest`. This means whatever the newest deployed revision is automatically gets that percentage of traffic without you having to run the CLI command every time!
+
+### Revision Labels
+
+Labels are "secret" dedicated URLs that bypass traffic splitting entirely. 
+*   **Scenario:** You deploy `v2`, but you assign it a weight of **0%** so no real users hit it. You assign the label `testing` to it.
+*   Your QA team can now go to `https://testing.order-api.azurecontainerapps.io` to test it safely in production. Once they approve, you update the traffic weight to 100%.
+
+## 4. Scaling Considerations & Best Practices
+
+If you have Multiple Revision mode on, **each active revision scales entirely on its own.**
+
+**The Resource Trap:**
+If you split traffic 50/50, each revision maintains its own minimum replicas. If a surge hits, the traffic is split, meaning *neither* revision might hit the threshold required to scale up efficiently. 
+
+**Best Practices:**
+1.  **Don't linger on splits:** If you are doing a Canary deployment (10% to new version), monitor it for a set time (e.g., 1 hour), then jump to 100%. Don't leave it running at 50/50 for a week.
+2.  **Deactivate old revisions:** Once you shift 100% traffic to the new version, **manually deactivate** the old version! If it stays "Active", it continues running its minimum replicas and costing you money.
+3.  **Test with labels first:** Always use labels to verify a new revision is healthy before routing live traffic to it.

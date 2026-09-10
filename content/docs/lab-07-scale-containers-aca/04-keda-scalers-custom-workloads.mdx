@@ -1,0 +1,97 @@
+---
+title: 04 - Apply KEDA scalers for custom workloads
+description: Learn how to configure Azure Container Apps with custom KEDA scalers for Apache Kafka, Redis, Cron schedules, and Prometheus metrics.
+---
+
+## The World of Custom Scalers
+
+Azure Container Apps supports almost any ScaledObject-based KEDA scaler. This means you can scale your apps based on open-source or third-party tools like **Apache Kafka, Redis, PostgreSQL, MySQL, MongoDB, and Prometheus**.
+
+**Scaler Categories:**
+1.  **Microsoft-maintained:** Azure-native scalers (Service Bus, Event Hubs, etc.). Best support, highly reliable.
+2.  **Community-maintained:** Open-source scalers (Kafka, Redis, etc.). Great, but support and documentation quality vary.
+3.  **External scalers:** Run as separate components and require complex deployment steps (not natively built into standard ACA config).
+
+## The 4 Major Custom Scaling Scenarios
+
+### 1. Apache Kafka Scaling
+**How it works:** Exactly like Event Hubs. It monitors **Consumer Group Lag** (the difference between the latest message written to a partition and the last message your worker processed).
+
+> [!WARNING]
+> Just like Event Hubs, your maximum effective replicas cannot exceed your Kafka partition count. 
+
+**Key Metadata:**
+*   `bootstrapServers`: Where your Kafka broker lives.
+*   `consumerGroup`: The group tracking offsets.
+*   `lagThreshold`: How much lag triggers a new replica (e.g., if threshold is 100, and you have 500 lag, KEDA spins up 5 replicas).
+*   **Authentication:** Uses SASL (PLAIN or SCRAM) or TLS via secrets.
+
+```yaml
+scale:
+  minReplicas: 1
+  maxReplicas: 50
+  rules:
+    - name: kafka-scaling
+      custom:
+        type: kafka
+        metadata:
+          bootstrapServers: "kafka-broker:9092"
+          consumerGroup: "order-consumers"
+          topic: "orders"
+          lagThreshold: "100"
+      auth:
+        - secretRef: kafka-credentials
+          triggerParameter: sasl
+```
+
+### 2. Redis Scaling
+Redis is often used as a fast, in-memory queue. There are two distinct ways to scale based on how you use Redis:
+1.  **Redis Lists:** The simpler method. It acts like a basic queue. The scaler simply runs an `LLEN` (List Length) command to see how many items are in the list. Best for simple producer-consumer workloads.
+2.  **Redis Streams:** The advanced method. It tracks "pending entries" in a consumer group. This is much better for fault tolerance because it tracks work that is *in progress* but hasn't been acknowledged yet, rather than just raw queue length.
+
+### 3. Cron-based (Scheduled) Scaling
+**How it works:** Scaling based on the **clock**, not based on traffic or queue depth! You define a time window using standard cron expressions. 
+
+**Why:** Imagine you know a massive marketing email goes out at 8:00 AM every morning. Instead of waiting for the queue to back up and *then* scaling, you use Cron scaling to spin up 50 replicas at 7:55 AM so they are ready and waiting.
+
+> [!TIP]
+> **The "Combo" Trick:** Cron scaling is best used *with* another scaler. You can use Cron to guarantee a minimum of 5 replicas during business hours, but leave an HTTP scaler active to scale up to 20 if there is an unexpected traffic spike. ACA will always use the **highest** replica count requested by any active scaler.
+
+```yaml
+scale:
+  minReplicas: 0
+  maxReplicas: 20
+  rules:
+    - name: business-hours
+      custom:
+        type: cron
+        metadata:
+          timezone: "America/New_York"
+          start: "0 8 * * 1-5"
+          end: "0 18 * * 1-5"
+          desiredReplicas: "5"
+    - name: http-scaling
+      http:
+        metadata:
+          concurrentRequests: "50"
+```
+
+### 4. Prometheus Metrics Scaling
+**How it works:** The ultimate "do whatever you want" scaler. If your app exposes custom metrics to a Prometheus server, you can write a `PromQL` query, and KEDA will scale based on the result.
+
+**Why:** HTTP requests or queue depths might not reflect your true bottleneck. You could scale based on custom business logic, like "Active User Sessions", "Database Connection Pool Exhaustion", or "Pending Financial Transactions".
+
+## Converting KEDA Specs to Container Apps Rules
+
+If you find a tutorial on the open-source KEDA website (`keda.sh`), the YAML won't perfectly match Azure Container Apps. You have to translate it:
+
+1.  **Type:** KEDA's `triggers[].type` becomes ACA's `--scale-rule-type` (CLI) or `type` under `custom` (YAML).
+2.  **Metadata:** KEDA's `triggers[].metadata` becomes key-value pairs for `--scale-rule-metadata`.
+3.  **Authentication:** Native KEDA uses a complex `TriggerAuthentication` object. ACA simplifies this: you just create standard ACA secrets and reference them in `--scale-rule-auth`.
+4.  **Limits:** KEDA's `minReplicaCount` / `maxReplicaCount` maps directly to ACA's `--min-replicas` / `--max-replicas`.
+
+## Best Practices
+- **Start Azure-Native:** If you are building a new system on Azure, default to Azure Service Bus/Event Hubs before trying to wire up a custom Kafka cluster, simply because the first-party integration is flawless.
+- **Test in Staging:** Custom scalers (especially community ones) can have weird polling quirks. Never push a new custom scaler straight to production without watching how it behaves under artificial load first.
+- **Combine Proactive and Reactive:** Use Cron (Proactive) to handle known peaks, and Queue/HTTP (Reactive) to handle surprises.
+- **Document Your Math:** If you set a Kafka `lagThreshold` of 250, document *why* you chose 250. Was it based on memory limits? Processing time? If you don't document it, the next engineer will be too scared to ever adjust it.
