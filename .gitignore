@@ -27,3 +27,9 @@ yarn-error.log*
 **/.env*.local
 **/.vercel/
 **/next-env.d.ts
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

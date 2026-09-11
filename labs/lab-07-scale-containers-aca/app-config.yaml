@@ -1,0 +1,80 @@
+id: /subscriptions/70841766-6f62-4d41-b351-a1f93992ea36/resourceGroups/rg-aca-scale-eastasia/providers/Microsoft.App/containerapps/agent-api
+location: East Asia
+name: agent-api
+properties:
+  configuration:
+    activeRevisionsMode: Single
+    dapr: null
+    identitySettings: []
+    ingress:
+      additionalPortMappings: null
+      allowInsecure: false
+      clientCertificateMode: null
+      corsPolicy: null
+      customDomains: null
+      exposedPort: null
+      external: true
+      fqdn: agent-api.gentlebay-bd90c318.eastasia.azurecontainerapps.io
+      ipSecurityRestrictions: null
+      stickySessions: null
+      targetPort: 8080
+      targetPortHttpScheme: null
+      traffic: null
+      transport: Http
+    maxInactiveRevisions: null
+    registries:
+    - passwordSecretRef: acr27225c45aazurecrio-acr27225c45a
+      server: acr27225c45a.azurecr.io
+      username: acr27225c45a
+    revisionTransitionThreshold: null
+    runtime: null
+    secrets:
+    - name: acr27225c45aazurecrio-acr27225c45a
+    service: null
+    targetLabel: null
+  customDomainVerificationId: F6375A4EDCE00C68D64AE4550B842C5805D7B7DC4258CFBBD8B370B91885D7BE
+  environmentId: /subscriptions/70841766-6f62-4d41-b351-a1f93992ea36/resourceGroups/rg-aca-scale-eastasia/providers/Microsoft.App/managedEnvironments/aca2-env-7225c45a
+  latestRevisionFqdn: agent-api.gentlebay-bd90c318.eastasia.azurecontainerapps.io
+  latestRevisionName: agent-api--latest
+  managedEnvironmentId: /subscriptions/70841766-6f62-4d41-b351-a1f93992ea36/resourceGroups/rg-aca-scale-eastasia/providers/Microsoft.App/managedEnvironments/aca2-env-7225c45a
+  outboundIpAddresses: null
+  patchingMode: Automatic
+  provisioningState: Succeeded
+  runningStatus: Running
+  template:
+    containers:
+    - env:
+      - name: AGENT_DEFAULT_DELAY_MS
+        value: '500'
+      image: acr27225c45a.azurecr.io/agent-api:v1
+      imageType: ContainerImage
+      name: agent-api
+      resources:
+        cpu: 0.25
+        ephemeralStorage: 1Gi
+        memory: 0.5Gi
+    initContainers: null
+    revisionSuffix: null
+    scale:
+      cooldownPeriod: null
+      maxReplicas: 10
+      minReplicas: 0
+      pollingInterval: null
+      rules:
+      - http:
+          metadata:
+            concurrentRequests: '10'
+        name: http-scaling
+    serviceBinds: null
+    terminationGracePeriodSeconds: null
+    volumes: null
+  workloadProfileName: Consumption
+resourceGroup: rg-aca-scale-eastasia
+systemData:
+  createdAt: '2026-09-11T04:28:42.1832455'
+  createdBy: sreejesh25122006@gmail.com
+  createdByType: User
+  lastModifiedAt: '2026-09-11T04:35:07.172874'
+  lastModifiedBy: sreejesh25122006@gmail.com
+  lastModifiedByType: User
+type: Microsoft.App/containerApps

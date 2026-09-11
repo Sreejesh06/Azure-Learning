@@ -1,0 +1,138 @@
+---
+title: 08 - Exercise - Configure Autoscaling with KEDA
+description: Deploy a mock agent API and configure autoscaling based on HTTP concurrent requests.
+---
+
+# Configure autoscaling using KEDA triggers
+
+AI applications often experience unpredictable workloads—a surge in inference requests, batch jobs, or sudden spikes from an agent-based workflow. KEDA-based autoscaling in Azure Container Apps allows your workloads to scale to zero when idle (saving costs) and rapidly scale out when demand increases.
+
+In this exercise, you deploy a simple mock agent API and configure autoscaling based on HTTP concurrent requests. You then generate concurrent load and observe how the app scales out and creates new revisions when configuration changes are applied.
+
+> [!IMPORTANT]
+> **Mac Apple Silicon & Student Subscription Gotchas**
+> This lab has been adapted to address several common issues when running on a Mac with Apple Silicon or using an Azure for Students subscription:
+> 1. **Region Quotas:** Free tiers often hit `MaxNumberOfEnvironmentsInSubExceeded` in `centralindia`. We recommend using `eastasia` instead.
+> 2. **ACR Build Block:** Student subscriptions block `az acr build`. We must use a local `docker build --platform linux/amd64` and `docker push`.
+> 3. **Managed Identities:** Express Environments don't play well with System-Assigned identities for ACR pulls. We use Admin Credentials instead.
+> 4. **Port 5000 Collision:** macOS Monterey+ uses port 5000 for the AirPlay Receiver. We run the local Flask dashboard on port 5001.
+> 5. **Python SSL Errors:** Mac Python environments often lack root certificates (`[SSL: CERTIFICATE_VERIFY_FAILED]`). We bypass this locally by turning off SSL verification in the testing script.
+
+## Step 1: Download project starter files
+
+1. Open your terminal and create a working directory.
+2. Download the Microsoft starter files:
+```bash
+curl -LO https://github.com/MicrosoftLearning/mslearn-azure-ai/raw/main/downloads/python/aca-scale-python.zip
+unzip aca-scale-python.zip
+```
+
+## Step 2: Update the deployment script
+
+Open `azdeploy.py` in your editor. 
+Update the variables at the top of the file:
+```python
+rg = "rg-aca-scale-eastasia"  # Use a region where you have quota!
+location = "eastasia"
+```
+
+*Note: If you are following the Mac/Student rules, ensure your `azdeploy.py` is updated to build the Docker image locally and use Admin Credentials for the ACR pull. Also, ensure `client/app.py` is updated to run on port 5001 and disable SSL verification for local testing.*
+
+## Step 3: Deploy Azure Services
+
+1. Ensure your local Docker engine is running.
+2. Ensure you are logged into Azure CLI (`az login`) and have the extensions:
+```bash
+az extension add --name containerapp
+az provider register --namespace Microsoft.App
+```
+3. Run the interactive deployment script:
+```bash
+python3 azdeploy.py
+```
+Follow the menu (Options 1, 2, then 3). Once finished, select 5 to exit.
+
+4. Load the generated environment variables:
+```bash
+source .env
+```
+
+## Step 4: Configure HTTP Autoscaling
+
+We will configure an HTTP scale rule that scales the app down to 0 when idle, and up to 10 instances when concurrent requests spike.
+
+```bash
+az containerapp update \
+  --name $CONTAINER_APP_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --min-replicas 0 \
+  --max-replicas 10 \
+  --scale-rule-name http-scaling \
+  --scale-rule-type http \
+  --scale-rule-http-concurrency 10
+```
+
+Verify the rule was applied:
+```bash
+az containerapp show \
+  --name $CONTAINER_APP_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --query "properties.template.scale"
+```
+
+## Step 5: Generate load and observe scaling
+
+1. Move to the client directory and set up a Python virtual environment:
+```bash
+cd client
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+2. Start the dashboard:
+```bash
+python3 app.py
+```
+3. Open a browser and navigate to **http://127.0.0.1:5001**.
+4. In the **Load Generator** section, click **Start**.
+5. Click **Refresh Revisions & Replicas** every 5-10 seconds. You will watch the number of running replicas increase as KEDA detects the load and scales out the app!
+6. When finished, press `Ctrl+C` in your terminal to stop the dashboard.
+
+## Step 6: Configure scale rules using YAML (Infrastructure as Code)
+
+In the real world, you manage configurations via YAML rather than CLI commands.
+
+1. Move back to the root directory and ensure variables are loaded:
+```bash
+cd ..
+source .env
+```
+2. Export the current configuration:
+```bash
+az containerapp show \
+  --name $CONTAINER_APP_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --output yaml > app-config.yaml
+```
+3. Open `app-config.yaml`. Modify the `scale` section to adjust the cool-down period and replica limits:
+```yaml
+    scale:
+      cooldownPeriod: 200
+      maxReplicas: 5
+      minReplicas: 1
+      pollingInterval: 30
+```
+4. Apply the updated configuration:
+```bash
+az containerapp update \
+  --name $CONTAINER_APP_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --yaml app-config.yaml
+```
+
+## Step 7: Clean up resources
+
+To avoid unnecessary costs, delete the resource group:
+```bash
+az group delete --name $RESOURCE_GROUP --no-wait --yes
+```
