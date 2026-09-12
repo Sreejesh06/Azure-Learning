@@ -1,0 +1,124 @@
+---
+title: 03 - Expose applications in Azure Kubernetes Services
+description: Learn how to use Kubernetes Services to provide stable networking and load balancing for your ephemeral Pods.
+---
+
+# Expose Applications in Azure Kubernetes Services (AKS)
+
+In the previous unit, we learned that Pods are highly ephemeral. If a Node goes down, a Pod dies and a new one respawns with a completely different IP address on the virtual network. Because of this chaos, **you can never rely on a Pod's IP address.**
+
+A **Kubernetes Service** solves this problem. It sits in front of your Pods and acts as a stable, persistent endpoint (with a static IP and DNS name). When traffic hits the Service, the Service acts as a load balancer, instantly forwarding the request to a healthy Pod. 
+
+<Mermaid chart={`
+flowchart LR
+    subgraph External["🌐 External Traffic"]
+        direction TB
+        Client["User Request"]
+    end
+
+    subgraph AKS["Azure Kubernetes Service"]
+        direction LR
+        SVC{"Service (LoadBalancer)"}
+        
+        subgraph Deployment["Deployment (app: inference-api)"]
+            P1["Pod (IP: 10.0.1.5)"]
+            P2["Pod (IP: 10.0.1.6)"]
+            P3["Pod (IP: 10.0.2.2)"]
+        end
+        
+        SVC -- Routes via Label --> P1
+        SVC -- Routes via Label --> P2
+        SVC -- Routes via Label --> P3
+    end
+
+    Client -- Hits Public IP --> SVC
+    
+    style External fill:#f0f8ff,stroke:#0078d4,stroke-width:2px,stroke-dasharray: 5 5
+    style AKS fill:#e6f2ff,stroke:#005a9e,stroke-width:2px
+    style SVC fill:#ffb900,stroke:#d83b01,stroke-width:2px,color:#000
+`} />
+
+
+## Anatomy of a Service Manifest
+
+A Service manifest is much simpler than a Deployment manifest. Its primary jobs are to define **what type of access** it provides, **what ports** it maps, and **which Pods** it routes to.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-api-service
+spec:
+  type: LoadBalancer          # The Type of Service
+  selector:
+    app: inference-api        # The Glue: Must match the labels on your Pods!
+  ports:
+  - protocol: TCP
+    port: 80                  # External port (What the Service listens on)
+    targetPort: 8080          # Container port (What your Python app listens on)
+```
+
+## The Three Service Types
+
+The `type:` field in the manifest is the most critical decision you will make. It determines exactly how your application is exposed.
+
+### 1. ClusterIP (The Default - Internal Only)
+If you omit the `type:` field, Kubernetes defaults to `ClusterIP`.
+* **What it does:** Assigns a static IP that is *only* accessible from inside the Kubernetes cluster.
+* **When to use it:** For backend APIs, databases, or microservices that should never be exposed to the public internet. If your frontend app needs to talk to your backend API, the backend should be a `ClusterIP`.
+
+### 2. NodePort (For Testing)
+* **What it does:** Opens a specific, high-numbered port (e.g., `30080`) directly on the firewall of every single Worker Node (VM) in your cluster.
+* **When to use it:** Rarely used in modern cloud production. It's mostly used for quick, dirty testing during local development, or if you are running your own custom load balancer outside of Kubernetes.
+
+### 3. LoadBalancer (Public Internet Access)
+* **What it does:** This is where the magic of the Cloud comes in. When you deploy a `LoadBalancer` Service in AKS, Kubernetes literally talks to the Azure API and asks Azure to provision a physical Azure Standard Load Balancer with a brand-new Public IP address.
+* **When to use it:** For your frontend web servers or public-facing APIs. Users on the internet hit the Azure Public IP, the Azure Load Balancer forwards it to the Kubernetes Service, and the Kubernetes Service forwards it to your Pod.
+
+### 4. ExternalName (The Reverse Proxy)
+* **What it does:** Instead of routing traffic to Pods, this Service acts as a DNS alias. It maps a Kubernetes Service name to an external DNS name (like `my-database.windows.net`). 
+* **When to use it:** When your Pods need to talk to an external database or third-party API, but you don't want to hardcode that external URL in your application code. Your app just calls the Kubernetes Service, and Kubernetes silently redirects the traffic to the external system.
+
+## Accessing the Service (`kubectl get svc`)
+
+Once your Service is deployed, you need to know what IP address Azure assigned to it. You do this by running `kubectl get svc` (short for services) in your terminal:
+
+```bash
+kubectl get svc inference-api-service
+```
+
+**Understanding the Output:**
+```text
+NAME                    TYPE           CLUSTER-IP   EXTERNAL-IP    PORT(S)
+inference-api-service   LoadBalancer   10.0.12.45   40.89.123.45   80:30523/TCP
+```
+* **`CLUSTER-IP`:** The internal IP address. Only Pods *inside* the cluster can use this.
+* **`EXTERNAL-IP`:** The public IP address provisioned by Azure. This is what you give to your frontend developers or external users (e.g., `http://40.89.123.45`). *Note: If this says `<pending>`, Azure is still provisioning the physical load balancer. Wait 60 seconds and run the command again.*
+
+## The Glue: Selectors and Ports
+
+There are two massive pitfalls to watch out for when writing Services:
+
+1. **The Selector Label:** The `selector:` block in your Service (e.g., `app: inference-api`) MUST perfectly match the `labels:` block inside the `template:` of your Deployment. If there is a typo, the Service will successfully create a Load Balancer, but it will route traffic to a black hole because it can't find any matching Pods.
+2. **The Ports:**
+   * `port:` is the port the Service listens on (Usually 80 for HTTP).
+   * `targetPort:` is the port your actual code is running on inside the container (e.g., Flask defaults to 5000, FastAPI often 8000 or 8080). If these don't line up, the connection drops.
+
+## Advanced Real-World Concepts (Beyond the Basics)
+
+While `LoadBalancer` and `ClusterIP` are the foundation, real-world enterprise deployments often use a few advanced patterns:
+
+### 1. Ingress Controllers (Saving Money on IPs)
+If you have 10 microservices in your cluster and you expose them all as `LoadBalancer`, Azure will provision 10 Public IP addresses, and you will pay for all of them. 
+Instead, the industry standard is to use an **Ingress Controller** (like NGINX or Azure Application Gateway). You create just **one** LoadBalancer for the Ingress Controller, and it uses URL path routing to direct traffic (e.g., `mydomain.com/api` routes to the API Service, and `mydomain.com/web` routes to the Frontend Service).
+
+### 2. Internal Load Balancers (VNET Only)
+Sometimes you want a Load Balancer, but you **don't** want it on the public internet. You want it accessible only to other VMs inside your private Azure Virtual Network (VNET). You can achieve this by adding an Azure-specific annotation to your Service metadata:
+```yaml
+metadata:
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+```
+
+### 3. CoreDNS (Internal Resolution)
+When you use a `ClusterIP`, how does one Pod actually find the Service? Kubernetes runs an internal DNS server called **CoreDNS**. When you create a Service named `api-service` in the `default` namespace, CoreDNS automatically generates a DNS record: `api-service.default.svc.cluster.local`. Your Pods can simply make an HTTP request to `http://api-service` and CoreDNS will instantly resolve it to the Service's internal IP.

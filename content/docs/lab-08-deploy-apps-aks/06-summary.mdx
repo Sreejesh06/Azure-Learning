@@ -1,0 +1,39 @@
+---
+title: 06 - Summary
+description: Summary of deploying apps to Azure Kubernetes Service.
+---
+
+## Visual Flow
+
+<Mermaid chart={`
+architecture-beta
+    group cluster[Azure Kubernetes Service]
+    service pods[Deployment Pods] in cluster
+    service svc[LoadBalancer Service] in cluster
+    service internet[External Traffic]
+    
+    internet:B -- T:svc
+    svc:B -- T:pods
+`} />
+
+The diagram illustrates the final architecture deployed in this module: external traffic from the internet hits the Azure LoadBalancer Service, which then routes the requests internally to the deployed application Pods running on AKS.
+
+## Module Summary
+
+In this module, you learned how to create Kubernetes Deployment manifests. These manifests define container images, replicas, resource requirements, and environment variables for running containerized applications on AKS. 
+
+You also explored how to expose applications using Kubernetes Services. You learned to choose between:
+- **ClusterIP** for internal access
+- **NodePort** for testing
+- **LoadBalancer** for external production access with Azure-managed public IPs
+
+Additionally, you learned how to deploy manifests using `kubectl apply` and verify deployment status by checking Pod and Service states. You practiced troubleshooting common issues like `ImagePullBackOff`, `CrashLoopBackOff`, and pending Pods using `kubectl logs` and `kubectl describe` commands. 
+
+Finally, you deployed an AI inference API to AKS, exposed it through a LoadBalancer Service, and verified connectivity using the public IP address.
+
+## Additional Resources
+
+- [Azure Kubernetes Service documentation](https://learn.microsoft.com/en-us/azure/aks/) - Comprehensive AKS guides and best practices
+- [Kubernetes official documentation](https://kubernetes.io/docs/) - Complete Kubernetes reference and concepts
+- [kubectl cheat sheet](https://kubernetes.io/docs/reference/kubectl/cheatsheet/) - Quick reference for kubectl commands
+- [AKS best practices](https://learn.microsoft.com/en-us/azure/aks/best-practices) - Production-ready practices for running applications on AKS

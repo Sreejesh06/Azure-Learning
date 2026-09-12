@@ -1,0 +1,56 @@
+---
+title: 01 - Introduction
+description: Introduction to deploying applications to AKS.
+---
+
+# Introduction to Deploying on Azure Kubernetes Service (AKS)
+
+Azure Kubernetes Service (AKS) is a managed Kubernetes cluster running on Azure infrastructure. It allows you to deploy and manage containerized applications without having to manage the underlying Kubernetes "control plane" (the brain of the cluster). 
+
+Imagine you built a Python FastAPI application that provides AI model inference capabilities. Your application is containerized and ready to run, but you need to deploy it where multiple users can access it with high availability. 
+
+Without AKS, you would have to manage Kubernetes infrastructure yourself. With AKS, you define simple YAML manifests and deploy your containerized app to a fully managed Kubernetes cluster. Your application automatically scales, survives pod crashes, and becomes accessible to external clients through a load balancer.
+
+## The AKS Architecture
+
+In a standard Kubernetes cluster, there is a **Control Plane** (which manages scheduling and state) and **Worker Nodes** (the actual VMs running your code). In AKS, Microsoft completely hides and manages the Control Plane for free. You only manage and pay for the Worker Nodes.
+
+## Core Technical Concepts
+
+To operate in Kubernetes, you don't imperatively run commands like `docker run`. Instead, you declaratively write YAML files (manifests) describing your desired state, and Kubernetes makes it happen. 
+
+<Mermaid chart={`
+flowchart TD
+    subgraph AKS["Azure Kubernetes Service"]
+        direction TB
+        SVC["Service (Stable IP / Load Balancer)"]
+        
+        subgraph Deployment["Deployment (Replica Controller)"]
+            P1["Pod (Container)"]
+            P2["Pod (Container)"]
+            P3["Pod (Container)"]
+        end
+        
+        SVC -- Routes traffic via labels --> P1
+        SVC -- Routes traffic via labels --> P2
+        SVC -- Routes traffic via labels --> P3
+    end
+
+    User(["External Traffic"]) --> SVC
+`} />
+
+### 1. Pods (The Execution Unit)
+A **Pod** is the atomic, smallest deployable unit in Kubernetes. You do not deploy containers directly; you deploy Pods, which wrap around your container. 
+* **Technical reality:** Pods are strictly ephemeral (temporary). They have their own IP address on the virtual network, but if a Pod crashes or its host VM reboots, that Pod is destroyed forever. A new Pod with a brand-new IP address will take its place.
+
+### 2. Deployments (The State Controller)
+Because Pods are ephemeral, you never launch them manually. You create a **Deployment**. 
+* **Technical reality:** A Deployment is a declarative YAML manifest where you define your "Desired State" (e.g., *“I want exactly 3 replicas of `my-api:v2` running, and they should use 512MB of RAM”*). The Kubernetes controller constantly monitors the cluster. If a Node goes offline and destroys two of your Pods, the Deployment detects a drift from the desired state (1 running vs 3 desired) and immediately schedules two new Pods on a healthy Node.
+
+### 3. Services (The Internal Load Balancer)
+Because Pods are constantly dying and respawning with new IP addresses, your frontend cannot hardcode the IP address of your backend API. 
+* **Technical reality:** A **Service** solves this by providing a static Virtual IP (VIP) and an internal DNS name (e.g., `http://my-api-service`). The Service acts as an internal load balancer. It uses "Label Selectors" to dynamically discover healthy Pods. As long as a Pod is tagged with `app: my-api`, the Service will route traffic to it, abstracting away the chaos of shifting Pod IPs.
+
+### 4. kubectl (The API Client)
+**`kubectl`** is the command-line tool you install on your laptop. 
+* **Technical reality:** It is simply an HTTP client that authenticates against the AKS Control Plane. When you run `kubectl apply -f deployment.yaml`, it converts your YAML file into a REST API POST request to the Kubernetes API server, instructing it to update the cluster's state database (etcd).

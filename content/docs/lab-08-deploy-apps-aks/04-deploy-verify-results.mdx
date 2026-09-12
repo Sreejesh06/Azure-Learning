@@ -1,0 +1,131 @@
+---
+title: 04 - Deploy and Verify Results
+description: Learn how to apply manifests, verify they are running, and troubleshoot common errors.
+---
+
+# Deploy and Verify Results
+
+You've written your `deployment.yaml` and `service.yaml`. The next step is sending them to the Kubernetes Control Plane to make your desired state a reality.
+
+## 1. Understanding the `kubectl` CLI
+
+Before we deploy, it is crucial to understand the tool we are using. `kubectl` is the command-line interface for Kubernetes. Almost every command follows this anatomy:
+
+`kubectl [ACTION] [RESOURCE_TYPE] [RESOURCE_NAME] [FLAGS]`
+
+* **Action:** What do you want to do? (`get`, `describe`, `logs`, `apply`, `delete`)
+* **Resource Type:** What are you looking at? (`pod`, `deployment`, `svc` for service, `nodes`)
+* **Resource Name:** The specific thing you want (e.g., `my-api-pod-123`)
+
+## 2. Deploying the Application
+
+In Kubernetes, you don't imperatively tell the cluster what to do (like `docker run`). You declaratively hand it your manifest file. Kubernetes then works asynchronously to make the cluster match your file.
+
+You do this using the `kubectl apply` command (`-f` stands for file):
+
+<Mermaid chart={`
+flowchart TD
+    User["💻 You (kubectl apply)"] --> API["⚙️ Kubernetes API Server"]
+    
+    subgraph ControlPlane["Kubernetes Control Plane (Asynchronous)"]
+        API --> |Saves desired state| ETCD[("🗄️ etcd (Database)")]
+        API --> |Notifies| Sched["🧠 Scheduler"]
+    end
+    
+    subgraph WorkerNode["AKS Worker Node"]
+        Sched --> |Assigns Pod| Kubelet["👷 Kubelet"]
+        Kubelet --> |Pulls Image & Starts| Pod["📦 Pod (Running)"]
+    end
+`} />
+
+```bash
+# Apply a single file
+kubectl apply -f deployment.yaml
+
+# Apply multiple files at once
+kubectl apply -f deployment.yaml -f service.yaml
+
+# Apply all YAML files in the current directory
+kubectl apply -f .
+```
+
+*Note: `kubectl apply` returns a success message immediately, but the actual deployment happens in the background. It takes a few moments for the cluster to pull the container images and start the Pods.*
+
+## 3. Verifying the Deployment
+
+Because deployment is asynchronous, you must manually check the status to ensure everything started correctly.
+
+### Check Pod Status
+```bash
+kubectl get pods
+```
+**Output Breakdown:**
+* **`NAME`**: The generated name of your Pod (e.g., `inference-api-7d8b...`).
+* **`READY`**: Shows `1/1` or `0/1`. This means "1 out of 1 containers in this pod is actually ready." If it's `0/1`, it's still starting up or crashed.
+* **`STATUS`**: Ideally `Running`. Could also be `Pending` or `CrashLoopBackOff`.
+* **`RESTARTS`**: How many times the container crashed and restarted.
+* **`AGE`**: How long it's been alive.
+
+### Check Deployment Status
+```bash
+kubectl get deployment
+```
+**Output Breakdown:**
+* **`READY`**: `2/2` means you requested 2 replicas, and 2 are currently running.
+* **`UP-TO-DATE`**: How many pods have the *latest* version of your code.
+* **`AVAILABLE`**: How many pods are actually healthy and available for users.
+
+### View Application Logs
+If your app is crashing, the logs are your best friend:
+```bash
+# View logs for a specific pod
+kubectl logs <pod-name>
+
+# View logs for all pods matching a label
+kubectl logs -l app=inference-api
+
+# View logs from only the last 10 minutes
+kubectl logs <pod-name> --since=10m
+```
+
+### Check Service External IP
+If you created a `LoadBalancer` Service, you need to find the public IP address Azure assigned to it:
+```bash
+kubectl get svc
+```
+**Output Breakdown:**
+* **`TYPE`**: `ClusterIP` (Internal) or `LoadBalancer` (Public).
+* **`CLUSTER-IP`**: The internal IP address (only usable inside the cluster).
+* **`EXTERNAL-IP`**: The public IP address provisioned by Azure. If it says `<pending>`, wait 30-60 seconds and run the command again.
+* **`PORT(S)`**: The port mapping (e.g., `80:30523/TCP`).
+
+---
+
+## 4. The Big Four: Troubleshooting Common Issues
+
+When things go wrong in Kubernetes, they usually fall into one of four categories.
+
+### Issue 1: `ImagePullBackOff`
+* **Symptom:** Your Pod is stuck in `ImagePullBackOff` or `ErrImagePull` status.
+* **Cause:** Kubernetes cannot download your container image.
+* **Diagnosis:** Run `kubectl describe pod <pod-name>` and look at the `Events` at the bottom to see exactly why it failed.
+* **Common Fixes:** You misspelled the image name/tag, or your AKS cluster lacks IAM permissions to pull from your Azure Container Registry (ACR).
+
+### Issue 2: `CrashLoopBackOff`
+* **Symptom:** Your Pod starts, but immediately crashes, and Kubernetes keeps trying to restart it in a loop.
+* **Cause:** Your actual application code is failing on startup. 
+* **Diagnosis:** Run `kubectl logs <pod-name>`. Check what your Python/Node.js app is complaining about.
+* **Common Fixes:** Missing environment variables, syntax error, or it's trying to connect to a database that isn't running yet.
+
+### Issue 3: `Pending`
+* **Symptom:** Your Pod never starts, it just sits in `Pending` forever.
+* **Cause:** The Kubernetes scheduler cannot find a Node with enough resources to run your Pod.
+* **Diagnosis:** Run `kubectl describe pod <pod-name>`. Look for an event like `Insufficient memory` or `Insufficient cpu`.
+* **Common Fixes:** Your cluster is full (scale up the Nodes), or you requested too much CPU/RAM in your manifest limits.
+
+### Issue 4: Service is Unreachable
+* **Symptom:** `kubectl get pods` shows `Running`, but when you curl the Service's External IP, it times out.
+* **Cause:** The Service isn't routing traffic to the Pods, usually due to a label mismatch.
+* **Diagnosis:** Run `kubectl describe svc <service-name>`. Look at the `Endpoints` row. If it says `<none>`, the Service hasn't found any Pods!
+* **Common Fixes:** Ensure the `selector` in your `service.yaml` exactly matches the `labels` in your `deployment.yaml`.
+

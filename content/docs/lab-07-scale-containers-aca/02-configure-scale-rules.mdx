@@ -6,25 +6,33 @@ description: Learn how to configure HTTP, TCP, CPU, and Memory scaling in Azure 
 ## Visual Flow
 
 <Mermaid chart={`
-architecture-beta
-    group traffic(cloud)[Traffic / Load]
-    service http(server)[HTTP Requests] in traffic
-    service tcp(server)[TCP Connections] in traffic
-    service cpu(server)[CPU / Memory load] in traffic
+flowchart LR
+    subgraph Traffic["Traffic / Load"]
+        direction TB
+        HTTP["HTTP Requests"]
+        TCP["TCP Connections"]
+        CPU["CPU/Memory Load"]
+    end
 
-    group aca(cloud)[Azure Container Apps]
-    service keda(server)[KEDA Scaler] in aca
-    service replica1(server)[Replica 1] in aca
-    service replica2(server)[Replica 2] in aca
-    service replica3(server)[Replica 3] in aca
-    
-    keda:T -- B:http
-    keda:T -- B:tcp
-    keda:T -- B:cpu
-    
-    keda:R -- L:replica1
-    keda:R -- L:replica2
-    keda:R -- L:replica3
+    subgraph ACA["Azure Container Apps"]
+        direction LR
+        KEDA{"KEDA Scaler"}
+        R1["Replica 1"]
+        R2["Replica 2"]
+        R3["Replica 3"]
+        
+        KEDA -->|Provisions| R1
+        KEDA -->|Provisions| R2
+        KEDA -->|Provisions| R3
+    end
+
+    HTTP -->|Triggers| KEDA
+    TCP -->|Triggers| KEDA
+    CPU -->|Triggers| KEDA
+
+    style Traffic fill:#f0f8ff,stroke:#0078d4,stroke-width:2px,stroke-dasharray: 5 5
+    style ACA fill:#e6f2ff,stroke:#005a9e,stroke-width:2px
+    style KEDA fill:#ffb900,stroke:#d83b01,stroke-width:2px,color:#000
 `} />
 
 The flow above shows how KEDA (Kubernetes Event-driven Autoscaling) sits inside Azure Container Apps. It constantly polls your defined triggers (HTTP, TCP, or CPU/Memory) and automatically provisions or terminates replicas based on the thresholds you define. 

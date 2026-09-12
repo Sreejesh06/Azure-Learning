@@ -1,0 +1,91 @@
+---
+title: 02 - Create Kubernetes deployment manifests
+description: Learn how to construct and understand Kubernetes Deployment manifests for your containerized applications.
+---
+
+# Create Kubernetes Deployment Manifests
+
+A Kubernetes Deployment manifest is a YAML file that tells Azure Kubernetes Service (AKS) exactly how to run your containerized application. Instead of manually managing containers, you declare your **desired state** in this manifest, apply it to the cluster, and Kubernetes makes it a reality.
+
+Imagine deploying an AI model inference API. Your application is already containerized in an Azure Container Registry (ACR). Your Deployment manifest essentially tells Kubernetes: *"Run 2 copies of this specific image from my registry, guarantee each copy gets 2GB of memory and 1 CPU core, and inject these specific environment variables."*
+
+## The Anatomy of a Deployment Manifest
+
+A Deployment manifest has a strict YAML hierarchy. Let's break down a complete example:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-inference-api        # The name of your Deployment
+  namespace: default            # Logical grouping (default is fine for now)
+spec:
+  replicas: 2                   # How many Pods you want running
+  selector:
+    matchLabels:
+      app: inference-api        # How the Deployment finds the Pods it owns
+  template:                     # Everything below here is the blueprint for the Pod
+    metadata:
+      labels:
+        app: inference-api      # Must match the selector above!
+    spec:
+      containers:
+      - name: api
+        image: myregistry.azurecr.io/inference-api:v1.0  # Container image path
+        ports:
+        - containerPort: 8080   # Port the application listens on
+        resources:
+          requests:             # Minimum guaranteed resources
+            memory: "2Gi"
+            cpu: "1000m"        # 1000m = 1 CPU core
+          limits:               # Maximum allowed resources before termination
+            memory: "4Gi"
+            cpu: "2000m"
+        env:                    # Non-sensitive configuration
+        - name: MODEL_NAME
+          value: "gpt-4"
+        - name: API_KEY         # Sensitive configuration (from a Secret)
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: api-key
+```
+
+### 1. Container Image Specification
+The `image:` field tells AKS exactly what to pull and run. It must include the registry name, the image name, and the tag (version):
+`[registry_name].azurecr.io/[image_name]:[tag]`
+
+### 2. Replicas for High Availability
+The `replicas:` field dictates how many copies of your Pod run simultaneously. 
+* **1 replica:** A single point of failure. If the Pod crashes, you have downtime until Kubernetes restarts it.
+* **2-3 replicas:** The standard for high availability. If one Pod crashes or a Node goes offline, the other replicas seamlessly handle the traffic while the dead Pod is replaced.
+
+### 3. Resource Requests and Limits
+Kubernetes is a multi-tenant environment; multiple Pods share the same underlying VM (Node). You must tell Kubernetes how much of that VM your Pod needs.
+* **Requests:** The *minimum* guaranteed resources. Kubernetes uses this to decide which Node has enough room to host your Pod. (e.g., `cpu: 1000m` means 1 whole CPU core).
+* **Limits:** The *maximum* allowed resources. If your application has a memory leak and exceeds its memory limit, Kubernetes will ruthlessly kill it (OOMKill) to protect the rest of the Node.
+
+### 4. Environment Variables and Secrets
+Applications need configuration. You inject this via the `env:` block.
+
+* **Plaintext:** Use `name:` and `value:` for non-sensitive data like `MODEL_NAME`.
+* **Secrets (The 2-Step Process):** Never hardcode passwords or API keys in your YAML, as this file is committed to version control. Kubernetes solves this by separating the **storage** of the secret from the **usage** of the secret.
+
+**Step 1: Put the secret in the "Kubernetes Vault"**
+You use your terminal to inject the password directly into the cluster's secure memory by creating a `Secret` object:
+```bash
+kubectl create secret generic api-secrets --from-literal=api-key="SuperSecretKey123!"
+```
+*Think of `api-secrets` as a secure locker, and `api-key` as the label on a folder inside that locker.*
+
+**Step 2: Tell your Deployment to open the locker**
+In your YAML file, you simply provide directions to the locker using `valueFrom: secretKeyRef`:
+```yaml
+        env:                    
+        - name: API_KEY         
+          valueFrom:            
+            secretKeyRef:
+              name: api-secrets # "Find the locker named 'api-secrets'"
+              key: api-key      # "Open the folder labeled 'api-key'"
+```
+When the Pod boots up, Kubernetes safely retrieves the secret from memory and injects it into the container.

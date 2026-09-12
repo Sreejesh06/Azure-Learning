@@ -9,14 +9,16 @@ AI applications often experience unpredictable workloads—a surge in inference 
 
 In this exercise, you deploy a simple mock agent API and configure autoscaling based on HTTP concurrent requests. You then generate concurrent load and observe how the app scales out and creates new revisions when configuration changes are applied.
 
-> [!IMPORTANT]
-> **Mac Apple Silicon & Student Subscription Gotchas**
-> This lab has been adapted to address several common issues when running on a Mac with Apple Silicon or using an Azure for Students subscription:
-> 1. **Region Quotas:** Free tiers often hit `MaxNumberOfEnvironmentsInSubExceeded` in `centralindia`. We recommend using `eastasia` instead.
-> 2. **ACR Build Block:** Student subscriptions block `az acr build`. We must use a local `docker build --platform linux/amd64` and `docker push`.
-> 3. **Managed Identities:** Express Environments don't play well with System-Assigned identities for ACR pulls. We use Admin Credentials instead.
-> 4. **Port 5000 Collision:** macOS Monterey+ uses port 5000 for the AirPlay Receiver. We run the local Flask dashboard on port 5001.
-> 5. **Python SSL Errors:** Mac Python environments often lack root certificates (`[SSL: CERTIFICATE_VERIFY_FAILED]`). We bypass this locally by turning off SSL verification in the testing script.
+import { Callout } from 'fumadocs-ui/components/callout';
+
+<Callout title="Mac Apple Silicon & Student Subscription Gotchas" type="warn">
+This lab has been adapted to address several common issues when running on a Mac with Apple Silicon or using an Azure for Students subscription:
+1. **Region Quotas:** Free tiers often hit `MaxNumberOfEnvironmentsInSubExceeded` in `centralindia`. We recommend using `eastasia` instead.
+2. **ACR Build Block:** Student subscriptions block `az acr build`. We must use a local `docker build --platform linux/amd64` and `docker push`.
+3. **Managed Identities:** Express Environments don't play well with System-Assigned identities for ACR pulls. We use Admin Credentials instead.
+4. **Port 5000 Collision:** macOS Monterey+ uses port 5000 for the AirPlay Receiver. We run the local Flask dashboard on port 5001.
+5. **Python SSL Errors:** Mac Python environments often lack root certificates (`[SSL: CERTIFICATE_VERIFY_FAILED]`). We bypass this locally by turning off SSL verification in the testing script.
+</Callout>
 
 ## Step 1: Download project starter files
 

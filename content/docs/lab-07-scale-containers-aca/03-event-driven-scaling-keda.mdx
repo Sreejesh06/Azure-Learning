@@ -6,23 +6,33 @@ description: Learn how to scale Azure Container Apps using event-driven triggers
 ## Visual Flow
 
 <Mermaid chart={`
-architecture-beta
-    group external(cloud)[External Event Sources]
-    service servicebus(database)[Azure Service Bus] in external
-    service storagequeue(database)[Storage Queue] in external
-    service eventhub(database)[Event Hub] in external
+flowchart LR
+    subgraph External["External Event Sources"]
+        direction TB
+        SB[(Azure Service Bus)]
+        SQ[(Storage Queue)]
+        EH[(Event Hub)]
+    end
 
-    group aca(cloud)[Azure Container Apps]
-    service keda(server)[KEDA Scaler] in aca
-    service worker1(server)[Worker Replica 1] in aca
-    service worker2(server)[Worker Replica 2] in aca
-    
-    keda:T -- B:servicebus
-    keda:T -- B:storagequeue
-    keda:T -- B:eventhub
-    
-    keda:R -- L:worker1
-    keda:R -- L:worker2
+    subgraph ACA["Azure Container Apps"]
+        direction LR
+        KEDA{"KEDA Scaler"}
+        W1["Worker Replica 1"]
+        W2["Worker Replica 2"]
+        W3["Worker Replica N"]
+        
+        KEDA -->|Scales Out| W1
+        KEDA -->|Scales Out| W2
+        KEDA -.->|Scales Out| W3
+    end
+
+    SB -->|Monitors depth| KEDA
+    SQ -->|Monitors depth| KEDA
+    EH -->|Monitors lag| KEDA
+
+    style External fill:#f0f8ff,stroke:#0078d4,stroke-width:2px,stroke-dasharray: 5 5
+    style ACA fill:#e6f2ff,stroke:#005a9e,stroke-width:2px
+    style KEDA fill:#ffb900,stroke:#d83b01,stroke-width:2px,color:#000
 `} />
 
 This diagram shows how the KEDA scaler inside Azure Container Apps constantly polls external event sources (like message queues or event streams). When messages pile up in the queue, KEDA automatically spins up worker replicas to process the backlog, and scales them back to zero when the queue is empty.

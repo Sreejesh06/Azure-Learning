@@ -1,0 +1,93 @@
+# 05 - Exercise - Deploy an AI inference API to Azure Kubernetes Service
+
+## Visual Flow
+
+<Mermaid chart={`
+architecture-beta
+    group cluster[AKS Cluster]
+    service api[AKS API Pod] in cluster
+    service lb[Azure Load Balancer] in cluster
+    service registry[Azure Container Registry]
+    
+    lb:L -- R:api
+    api:T -- B:registry
+`} />
+
+The diagram shows traffic entering through the Azure Load Balancer, which then routes it to the AKS API Pod. The Pod itself pulls its container image from the Azure Container Registry during deployment.
+
+## Navigating Azure for Students Limits
+
+When deploying resources on an Azure for Students subscription, you will run into several roadblocks that differ from enterprise accounts.
+
+### The ACR Tasks Roadblock
+
+**Symptom:** Running `az acr build` fails with `TasksOperationsNotAllowed`.
+**Why it happened:** Azure disables cloud-based image building (ACR Tasks) for student accounts to prevent crypto-mining abuse.
+**The Fix:** You must build the Docker image locally and push it to the registry using the standard Docker CLI.
+
+**Why:** Authenticate the local Docker CLI with Azure Container Registry so it can push images.
+```bash
+az acr login --name <your-registry-name>
+```
+
+**Why:** Build the image locally, forcing the linux/amd64 platform so it runs correctly on AKS nodes, and push it.
+```bash
+docker build --platform linux/amd64 -t <your-registry-name>.azurecr.io/aks-api:latest ./api
+docker push <your-registry-name>.azurecr.io/aks-api:latest
+```
+
+### The Quota vs Policy Trap
+
+When creating the AKS cluster, you have to select a Virtual Machine size for the worker nodes. This is where Quota and Policy collide.
+
+**Symptom:** Cluster creation fails with `ErrCode_InsufficientVCPUQuota` (when using Standard_D2s_v5) or `BadRequest: The VM size is not allowed in your subscription` (when using Standard_D2s_v3).
+**Why it happened:** Azure Policy is the rulebook dictating what you are allowed to deploy. Azure Quota is the physical inventory available in that region. D2s_v5 was allowed by policy but had 0 quota. D2s_v3 had quota but was blocked by policy.
+**The Fix:** Find a VM size that satisfies both. Standard_B2s_v2 (Burstable series) is allowed for students and generally has high availability.
+
+**Why:** Create the managed Kubernetes cluster using a VM size that satisfies both student policy and regional quota, while attaching it to the container registry so it can pull images.
+```bash
+az aks create \
+  --resource-group rg-ai-aks-lab \
+  --name aks-7225c45a \
+  --location eastasia \
+  --node-count 1 \
+  --node-vm-size Standard_B2s_v2 \
+  --tier free \
+  --network-plugin azure \
+  --no-ssh-key \
+  --attach-acr acr7225c45a \
+  --enable-managed-identity
+```
+
+## Deploying to Kubernetes
+
+Once the cluster is running, we need to apply the Kubernetes manifests to create the Deployment and the Service.
+
+**Why:** Download the credentials for the new AKS cluster so your local kubectl tool can communicate with it.
+```bash
+az aks get-credentials --resource-group rg-ai-aks-lab --name aks-7225c45a --overwrite-existing
+```
+
+### The Empty Service File Gotcha
+
+**Symptom:** Running `kubectl apply -f k8s/` successfully created the Deployment, but running `kubectl get service` showed no new services, and no Load Balancer was provisioned.
+**Why it happened:** We mistakenly assumed the starter files were complete, but the `k8s/service.yaml` file was completely empty (0 bytes). Without a Service manifest, Kubernetes has no instructions to expose the Pods to the internet, so it doesn't create a Load Balancer or assign an external IP.
+**The Fix:** Manually create the `service.yaml` file specifying `type: LoadBalancer` and mapping port 80 to the container's port 8000.
+
+### The Readiness Probe Gotcha
+
+**Symptom:** After applying the deployment, the Pod stays in a `0/1 Ready` state and kubectl describe pod shows `Readiness probe failed: HTTP probe failed with statuscode: 503`.
+**Why it happened:** The API readiness endpoint was attempting to send an HTTP request to the OPENAI_API_ENDPOINT environment variable to check connectivity. Because the variable was set to a placeholder string ("FOUNDRY_ENDPOINT") rather than a valid URL, the HTTP client crashed, failing the probe. Kubernetes will not route traffic to a pod that fails its readiness probe.
+**The Fix:** Update k8s/deployment.yaml to provide a valid dummy URL (like https://www.microsoft.com) so the health check succeeds.
+
+**Why:** Apply all Kubernetes manifests in the k8s directory to the cluster.
+```bash
+kubectl apply -f k8s/
+```
+
+**Why:** Watch the Load Balancer service provision a public IP address so you can access the API from the internet.
+```bash
+kubectl get service aks-api-service --watch
+```
+
+Once the external IP is assigned, you can connect the local client application to the cloud API by setting the API_ENDPOINT environment variable and running the Python script.
