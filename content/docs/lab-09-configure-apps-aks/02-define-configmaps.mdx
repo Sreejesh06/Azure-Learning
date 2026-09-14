@@ -1,0 +1,146 @@
+---
+title: 02 - Define ConfigMaps
+description: Learn how to externalize application configuration using Kubernetes ConfigMaps, including environment variables, file mounts, and immutability.
+---
+
+ConfigMaps are the backbone of environment-specific configuration in Kubernetes. They allow you to store non-sensitive data (like feature flags, API endpoints, or raw `.config` files) completely separate from your application code. 
+
+By using ConfigMaps, you can deploy the **exact same Docker image** to Dev, Staging, and Production, just swapping out the ConfigMap in each environment.
+
+## 1. Defining a ConfigMap
+
+A ConfigMap is defined using standard Kubernetes YAML. The configuration is stored as key-value pairs inside the `data` block.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-settings
+data:
+  # Simple key-value pairs
+  FEATURE_X_ENABLED: "true"
+  SERVICE_ENDPOINT: "https://api.example.com"
+  
+  # File-like configuration (using the '|' character for multi-line strings)
+  app.config: |
+    log_level=info
+    timeout_seconds=30
+```
+
+> **Cloud Engineer Tip (How to Remember):** The easiest way to remember how to create a ConfigMap quickly is from the command line instead of writing YAML from scratch: `kubectl create configmap app-settings --from-literal=FEATURE_X_ENABLED=true --dry-run=client -o yaml`. This generates the YAML for you instantly!
+
+> **Exam Tip:** ConfigMaps are strictly limited to **1 MiB** in size. This ensures fast synchronization across the cluster and prevents overwhelming the `etcd` database. If you have binary data or massive configuration files, you must use Azure Files or Azure Blob Storage (Persistent Volumes).
+
+## 2. Consuming ConfigMaps
+
+There are two primary ways to get the data from a ConfigMap into your Pod. You must understand the difference, as it dictates how updates are handled.
+
+<Mermaid chart={`
+flowchart LR
+  subgraph AKS["AKS Cluster"]
+    CM["Kubernetes ConfigMap\n(app-settings)"]
+    subgraph Pod["Worker Pod"]
+      App["Application Code"]
+      Env["Environment Variables\n(process.env)"]
+      Vol["Mounted Volume\n(/app/config)"]
+    end
+  end
+  
+  CM -->|Option A: Injected at startup| Env
+  CM -->|Option B: Mounted as files| Vol
+  
+  Env -->|Reads fast, but requires Pod restart| App
+  Vol -->|Auto-updates on ConfigMap change| App
+
+  style CM fill:#0072c6,color:#fff
+  style Env fill:#ffb900,color:#000
+  style Vol fill:#107c10,color:#fff
+`} />
+
+### Option A: Environment Variables
+You map specific keys from the ConfigMap to environment variables inside the container. 
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-api
+  template:
+    metadata:
+      labels:
+        app: web-api
+    spec:
+      containers:
+      - name: api
+        image: myregistry.azurecr.io/web-api:v1
+        env:
+        - name: FEATURE_X_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: app-settings
+              key: FEATURE_X_ENABLED
+        
+        # PRO-TIP: Bulk Load Alternative
+        # If you have 50 variables, don't write them out individually! 
+        # Load them all at once using envFrom:
+        # envFrom:
+        # - configMapRef:
+        #     name: app-settings
+```
+
+> **Exam Tip:** If you update a ConfigMap that is consumed as environment variables, **the Pod will NOT update automatically.** You must manually restart the Pods (`kubectl rollout restart deployment web-api`) for the new environment variables to take effect.
+
+### Option B: Mounted Files (Volumes)
+Instead of environment variables, you mount the entire ConfigMap as a folder on the container's hard drive. Each key in the ConfigMap becomes a physical file, and the value becomes the file's contents.
+
+```yaml
+      containers:
+      - name: api
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: app-settings
+```
+
+> **Cloud Engineer Tip:** Unlike environment variables, **mounted files update automatically!** Kubernetes periodically syncs changes. If you edit the ConfigMap, the files at `/app/config` will automatically update a few moments later without you needing to restart the Pod (assuming your application watches for file changes).
+
+## 3. Immutable ConfigMaps
+
+If you have a massive cluster with thousands of ConfigMaps, Kubernetes spends a lot of CPU power constantly watching them for changes.
+
+To fix this, you can mark a ConfigMap as immutable:
+```yaml
+immutable: true
+```
+
+> **Why Cloud Engineers use this:** 
+> 1. **Performance:** It tells Kubernetes to stop watching the file for changes, greatly reducing the load on the API server.
+> 2. **Safety:** It prevents accidental configuration drift. Once it's immutable, it's locked forever. If you need to change it, you must delete it and create a completely new one (e.g., `app-settings-v2`).
+
+## 4. Azure App Configuration Integration
+Managing ConfigMaps manually across 50 different microservices is a nightmare. In the real world, enterprise teams use **Azure App Configuration**. 
+Azure runs a "Kubernetes Provider" agent in your cluster that automatically pulls configurations and feature flags from Azure and generates the ConfigMaps in your cluster for you. 
+
+## 5. Verification Commands
+
+After applying your YAMLs (`kubectl apply -f configmap.yaml`), how do you verify it worked?
+
+1. **Check the ConfigMap exists:**
+   ```bash
+   kubectl describe configmap app-settings
+   ```
+2. **Execute into the Pod and print environment variables:**
+   ```bash
+   kubectl exec <pod-name> -- printenv | grep FEATURE
+   ```
+
+> **How to remember `kubectl exec`:** Think of `exec` as "execute a command inside the container." You provide the pod name, then two dashes `--` to say "stop reading kubectl flags, everything after this is the command to run." Then run `printenv` (print environment).

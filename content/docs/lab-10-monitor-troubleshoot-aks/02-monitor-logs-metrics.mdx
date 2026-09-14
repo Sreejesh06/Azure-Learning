@@ -1,0 +1,116 @@
+---
+title: 02 - Monitor application logs and metrics
+description: Learn how to inspect logs and metrics for applications on AKS.
+---
+
+To truly master monitoring on Kubernetes, we need to separate it into two distinct concepts: **Metrics (The Vitals)** and **Logs (The Patient History)**.
+
+## 1. The Core Signals: What are we actually looking for?
+
+When you deploy an AI application, you must monitor specific "signals" to know if it's healthy. The industry standard tracks these four metrics (often called RED metrics: Rate, Errors, Duration, plus Utilization):
+
+1.  **Response Latency (Duration):** How long does the AI model take to answer? If it usually takes 200ms but suddenly takes 4 seconds, your users are experiencing severe lag.
+2.  **Throughput (Rate):** How many requests per second is the API handling? Is it 10 requests, or did a spike just send 10,000 requests?
+3.  **Error Rates (Errors):** Are users getting successful HTTP `200 OK` responses, or are they getting HTTP `500 Internal Server Error`?
+4.  **Resource Utilization:** Is your container using 99% of its allowed CPU? If a container hits its CPU limit, Kubernetes will "throttle" it (artificially slow it down), which directly causes the latency spikes mentioned in point 1.
+
+## 2. Deep Dive: Logs (The Patient History)
+
+Logs tell you *what* happened. Every time your application uses a `print()` statement in Python, or a `console.log()` in Node.js, it is written to standard output (`stdout`). Kubernetes captures this output.
+
+### The GUI Way (Azure Portal)
+*   **How it works:** You click through the Portal -> Workloads -> Select your Pod -> Click "Live Logs".
+*   **Why use it?** It's amazing for quick checks. You don't need to authenticate your terminal. You can sit with a developer, open the browser, and watch the logs scroll by in real-time as they test the app. 
+
+### The CLI Way (`kubectl logs`)
+When you are deep in the trenches troubleshooting, the terminal is much more powerful because you can filter the text.
+
+```bash
+# Get the basic logs from a pod
+kubectl logs my-ai-pod -n ai-workloads
+
+# The '-f' flag means "follow". It streams the logs live to your terminal screen.
+kubectl logs -f my-ai-pod -n ai-workloads
+```
+
+> **Crucial Concept: Namespaces (`-n`)**
+> 
+> Technically, a **Namespace** is a logical partition within a single physical Kubernetes cluster. It provides a scope for names. For example, you can have a Pod named `api` in one namespace, and a completely different Pod also named `api` in another namespace, without them conflicting.
+> 
+> What do Namespaces actually separate?
+> *   **Environments:** You can have `dev`, `staging`, and `production` namespaces all running on the same cluster hardware.
+> *   **Teams:** You can separate `ai-team` from `frontend-team`.
+> *   **Access Control (RBAC):** You can give a developer full Admin rights to the `dev` namespace, but completely block their access to the `production` namespace.
+> *   **Resource Quotas:** You can strictly limit the `dev` namespace to a maximum of 4GB of RAM, ensuring experimental code doesn't crash the cluster.
+> 
+> If you just type `kubectl get pods`, Kubernetes only looks in the `default` namespace. If your AI apps are in the `ai-workloads` namespace, you MUST explicitly tell `kubectl` where to look using the `-n` flag, otherwise it will say "Pod not found".
+
+> **Crucial Concept: Multi-container Pods (`-c`)**
+> 
+> Sometimes a Pod has *two* containers running inside it. For example, your main Python AI app, and a "Sidecar" container that ships logs to a database. If you ask Kubernetes for the logs, it will get confused.
+> ```bash
+> # The '-c' flag tells it exactly which container inside the pod to read from
+> kubectl logs my-ai-pod -c inference-api -n ai-workloads
+> ```
+
+## 3. Deep Dive: Metrics (The Vital Signs)
+
+Metrics tell you *how healthy* the system is right now. It's a snapshot of numbers (CPU%, RAM used, Network bytes).
+
+### The GUI Way (Azure Container Insights)
+*   **How it works:** Azure runs a background agent on your cluster that constantly scrapes metrics and builds heat maps and graphs in the Portal.
+*   **Why use it?** It is historically persistent. If your app crashed at 3:00 AM while you were sleeping, you can open the Portal at 9:00 AM, rewind the graph to 3:00 AM, and see that the Memory usage spiked to 100%.
+
+### The CLI Way (`kubectl top`)
+*   **How it works:** Kubernetes has an internal add-on called the "Metrics Server" that tracks the absolute current state of the hardware.
+```bash
+# See how much CPU/Memory the physical servers are using
+kubectl top nodes
+
+# See exactly which Pods are hogging all the RAM right now
+kubectl top pods -n ai-workloads
+```
+*   **Why use it?** It's instant. If the cluster is currently on fire, you run `kubectl top pods`, instantly see which Pod is eating 10GB of RAM, and delete it. You don't have time to load a web dashboard.
+
+## 4. The Senior Engineer's Master Workflow
+
+Here is how a real engineering team actually implements best practices for logging:
+
+### A. Structured Logging
+Instead of printing raw text like `User logged in`, your app should print structured JSON: `{"event": "login", "user": "123", "status": "success"}`. Azure tools can instantly read JSON, allowing you to run database-like queries across millions of log lines to instantly find all logs where `status == error`.
+
+### B. Correlation IDs (Distributed Tracing)
+In a microservices architecture, a single user click might travel through 4 different Pods before finishing. If the 4th Pod crashes, how do you know which user click caused it? 
+
+You solve this using a **Correlation ID**. 
+1. When a request hits your front door, you generate a unique random ID (e.g., `Req-99`). 
+2. You pass that exact ID along in the HTTP headers to every single backend service it touches.
+3. Every microservice prints that ID in its logs.
+
+<Mermaid chart={`
+flowchart LR
+  User((User Click))
+  
+  subgraph AKS["AKS Cluster"]
+    API["Frontend API\nGenerates ID: Req-99"]
+    Worker["Background Worker\nReceives Req-99"]
+    DB["Database Pod\nReceives Req-99"]
+  end
+  
+  User -->|Clicks Checkout| API
+  API -->|Logs: Req-99 Start| Worker
+  Worker -->|Logs: Req-99 Processing| DB
+  DB -->|Logs: Req-99 Failed!| DB
+  
+  style API fill:#0072c6,color:#fff
+  style Worker fill:#ffb900,color:#000
+  style DB fill:#d13438,color:#fff
+`} />
+
+If a user complains that their checkout failed, you just type `kubectl logs -l app=backend | grep Req-99`. You will instantly see the entire chain of events across all three servers perfectly stitched together, proving exactly which Pod broke the chain.
+
+### C. The Hybrid Investigation
+When an actual incident happens:
+*   *Step 1:* You get an email alert saying "High CPU".
+*   *Step 2:* You open the **Azure Portal** to look at the graph and visually confirm the spike happened at 12:05 PM.
+*   *Step 3:* You switch to your **terminal** and run `kubectl logs` on the exact Pod that spiked, filtering for logs right around 12:05 PM to find the exact line of code that caused it.

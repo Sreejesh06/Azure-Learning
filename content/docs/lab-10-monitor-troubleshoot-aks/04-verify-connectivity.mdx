@@ -1,0 +1,127 @@
+---
+title: 04 - Verify service connectivity and endpoints
+description: Learn how to verify Service and ingress connectivity paths.
+---
+
+Now that you know how to fix Pods, we need to talk about **Networking**. An AI model is completely useless if the rest of your application (or the outside world) can't reach it.
+
+This unit covers how traffic flows into your cluster and how to debug the network.
+
+## 1. The Three Types of Kubernetes Services
+
+By default, Pods are completely isolated. To let traffic reach them, you create a `Service`. There are three main types of Services you must understand:
+
+1.  **`ClusterIP` (Internal Only):** 
+    *   *What it is:* The default. It creates an IP address that only exists *inside* the cluster.
+    *   *When to use it:* For backend databases or internal background workers. You absolutely do NOT want the public internet reaching your database directly.
+2.  **`NodePort` (The Old Way):**
+    *   *What it is:* It opens a specific port (like `30005`) on the firewall of every single physical server (Node) in your cluster. 
+    *   *When to use it:* Rarely used in modern cloud environments, but sometimes used for custom load balancing setups.
+3.  **`LoadBalancer` (The Cloud Way):**
+    *   *What it is:* When you create this on AKS, Kubernetes literally makes an API call to Azure and tells Azure to build a physical Public Load Balancer with a real Public IP address, and wires it directly to your Pods.
+    *   *When to use it:* When you need to expose your AI API directly to the public internet.
+
+### Deep Dive: Layer 4 vs Layer 7 (LoadBalancer vs Ingress)
+
+A common point of confusion is how a LoadBalancer differs from an Ingress. To understand this, you need to understand the OSI Model and how network packets are wrapped like a "Russian nesting doll".
+
+<Callout type="info" title="The Russian Nesting Doll Packet">
+When a user types `http://my-app.com/ai` into their browser, the computer wraps the Layer 7 Application data (the HTTP request) inside a Layer 4 Transport wrapper (TCP Port 443), and ships it to the cluster's Public IP.
+</Callout>
+
+<Mermaid chart={`
+flowchart TD
+    subgraph UserComputer["USER'S COMPUTER (DOWN THE STACK)"]
+        L7_User["Layer 7 Application<br/>HTTP Request: GET /ai<br/>Host: my-app.com"]
+        L4_User["Layer 4 Transport<br/>TCP Segment (Port 443)"]
+        L3_User["Layer 3 Network<br/>IP Packet (Dest: 192.0.2.1)"]
+        L1_User["Layer 2/1 Data Link/Physical<br/>Network Bits"]
+        
+        L7_User -->|"Encapsulation"| L4_User
+        L4_User --> L3_User
+        L3_User --> L1_User
+    end
+
+    Internet(("Public Internet<br/>Access"))
+
+    subgraph K8sCluster["KUBERNETES CLUSTER (UP THE STACK)"]
+        LB["1. CLOUD LOADBALANCER (LAYER 4)<br/>Reads: L3 (IP) & L4 (TCP)<br/>Ignores Layer 7"]
+        Ingress["2. INGRESS CONTROLLER (LAYER 7)<br/>Reads: L7 (Host, Path: /ai)<br/>Routes based on rules"]
+        
+        subgraph Services["Internal Routing"]
+            SvcAI["3. K8s SERVICE: AI MODEL (LAYER 4)<br/>Endpoints: 10.244.1.85:8080"]
+            SvcWeb["3. K8s SERVICE: WEB (LAYER 4)"]
+        end
+        
+        Pods["4. APPLICATION PODS"]
+        
+        LB -->|"Forwards TCP"| Ingress
+        Ingress -->|"Path: /ai"| SvcAI
+        Ingress -.->|"Path: /web"| SvcWeb
+        SvcAI --> Pods
+    end
+
+    L1_User == "INTERNET TRAFFIC" ==> Internet
+    Internet ==> LB
+    
+    style L7_User fill:#ffcc80,color:#000
+    style L4_User fill:#90caf9,color:#000
+    style L3_User fill:#a5d6a7,color:#000
+    style L1_User fill:#ce93d8,color:#000
+    
+    style LB fill:#e3f2fd,color:#000,stroke:#2196f3
+    style Ingress fill:#e8f5e9,color:#000,stroke:#4caf50
+    style SvcAI fill:#e1bee7,color:#000,stroke:#9c27b0
+    style SvcWeb fill:#e1bee7,color:#000,stroke:#9c27b0
+    style Pods fill:#bbdefb,color:#000,stroke:#1976d2
+`} />
+
+**1. The Cloud LoadBalancer (Layer 4 - The Delivery Truck)**
+A standard cloud LoadBalancer operates purely at the Transport Layer (TCP/UDP). 
+*   **What it sees:** It only looks at the outer wrapper: "This is TCP traffic going to Port 443."
+*   **The Limitation:** It is **completely blind to application data**. Because it cannot unpack the HTTP packet, it has no idea what URL (`my-app.com`) or path (`/ai`) the user typed. It just blindly forwards 100% of the raw data stream to the cluster.
+
+**2. The Kubernetes Ingress (Layer 7 - The Smart Receptionist)**
+An Ingress Controller (like NGINX) operates at the Application Layer (HTTP/HTTPS). 
+*   **What it sees:** It terminates the Layer 4 connection, decrypts the traffic, and actually opens the inner Layer 7 packet. It reads the raw HTTP headers: `Host: my-app.com` and `Path: /ai`.
+*   **The Advantage:** Because it can read the URL path, it can act as a smart traffic cop. It can route `/ai` traffic to your AI Model Service, and `/web` traffic to your Frontend Web Service, all while sharing a single Public IP address.
+
+## 2. Port-Forwarding (The Developer's Magic Tunnel)
+
+Imagine you just deployed a new, highly-experimental AI model. It's behind a `ClusterIP` Service because you don't want the public to see it yet. How do *you* test it from your laptop?
+
+You use `kubectl port-forward`. This command creates a secure, encrypted tunnel from your local laptop, straight into the Kubernetes cluster.
+
+```bash
+# Syntax: kubectl port-forward <resource> <local-port>:<cluster-port>
+kubectl port-forward service/inference-api 8080:80 -n ai-workloads
+```
+
+**How to read this command:**
+"Take port `8080` on my physical laptop, open a tunnel, and connect it to port `80` of the `inference-api` Service inside the cluster."
+
+While that command is running, you can open a new terminal and type:
+```bash
+curl http://localhost:8080/api/inference
+```
+Your laptop thinks it's talking to itself (`localhost`), but the traffic is actually being teleported securely into the Azure cloud. This is the ultimate tool for verifying if a Pod is actually answering requests before you mess with Public IPs.
+
+## 3. Finding External IPs
+
+If you did expose your app using a `LoadBalancer` or `Ingress`, how do you find the Public IP to give to your users?
+
+### The GUI Way (Azure Portal)
+1. Navigate to your AKS cluster.
+2. Under "Kubernetes resources", click **Services and ingresses**.
+3. Look at the **External IP** column. You can just copy and paste it into your browser.
+
+### The CLI Way
+```bash
+# Check Services
+kubectl get service -n ai-workloads
+
+# Check Ingresses
+kubectl get ingress -n ai-workloads
+```
+
+Look for the `EXTERNAL-IP` column. If it says `<pending>`, it means Azure is still provisioning the Public IP in the background (which can take 1-2 minutes). If it shows an IP address, you are live on the internet!

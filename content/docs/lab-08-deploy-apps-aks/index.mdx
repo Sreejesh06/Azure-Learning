@@ -1,8 +1,27 @@
 ---
-title: Lab 08 - Deploy Apps on AKS
-description: Learn how to deploy applications to Azure Kubernetes Service.
+title: 08 - Deploy Apps on AKS
+description: Learn how to deploy and expose containerized AI APIs to Azure Kubernetes Service.
 ---
 
-# Lab 08 - Deploy Apps on AKS
+Welcome to Lab 08! In this module, you will take a local Python application and deploy it to a production-grade Kubernetes cluster in Azure.
 
-Content coming soon.
+Azure Kubernetes Service (AKS) simplifies the deployment, management, and scaling of containerized applications. It offloads much of the operational overhead of managing Kubernetes to Azure, allowing you to focus on your application code.
+
+## What You Will Build
+
+In this hands-on lab, we will:
+1. **Containerize:** Build a Docker image for a Python AI Inference API.
+2. **Store:** Push the image to your private Azure Container Registry (ACR).
+3. **Provision:** Spin up a managed AKS cluster, navigating Azure for Students quota and policy limitations.
+4. **Deploy:** Write and apply Kubernetes `deployment.yaml` and `service.yaml` manifests.
+5. **Expose:** Route internet traffic directly to your API using an Azure Load Balancer.
+
+## Prerequisites
+
+Before starting, ensure you have:
+- An active Azure subscription (Azure for Students is fully supported).
+- The Azure CLI installed and authenticated (`az login`).
+- Docker installed and running locally.
+- The `kubectl` command-line tool installed.
+
+Let's dive into the core concepts and get our hands dirty with Kubernetes!

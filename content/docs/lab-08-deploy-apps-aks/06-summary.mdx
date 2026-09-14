@@ -6,14 +6,15 @@ description: Summary of deploying apps to Azure Kubernetes Service.
 ## Visual Flow
 
 <Mermaid chart={`
-architecture-beta
-    group cluster[Azure Kubernetes Service]
-    service pods[Deployment Pods] in cluster
-    service svc[LoadBalancer Service] in cluster
-    service internet[External Traffic]
+flowchart TB
+    internet((External Traffic))
+    subgraph cluster[Azure Kubernetes Service]
+        svc[LoadBalancer Service]
+        pods[Deployment Pods]
+    end
     
-    internet:B -- T:svc
-    svc:B -- T:pods
+    internet --> svc
+    svc --> pods
 `} />
 
 The diagram illustrates the final architecture deployed in this module: external traffic from the internet hits the Azure LoadBalancer Service, which then routes the requests internally to the deployed application Pods running on AKS.
@@ -30,6 +31,44 @@ You also explored how to expose applications using Kubernetes Services. You lear
 Additionally, you learned how to deploy manifests using `kubectl apply` and verify deployment status by checking Pod and Service states. You practiced troubleshooting common issues like `ImagePullBackOff`, `CrashLoopBackOff`, and pending Pods using `kubectl logs` and `kubectl describe` commands. 
 
 Finally, you deployed an AI inference API to AKS, exposed it through a LoadBalancer Service, and verified connectivity using the public IP address.
+
+## Enterprise AKS Best Practices
+
+While this module focused on getting a baseline cluster up and running, deploying AKS in a production enterprise environment requires understanding the split between platform modes and team roles. Here is the comprehensive breakdown of how to run enterprise-ready workloads on AKS.
+
+### 1. Choosing Your Cluster Mode
+Microsoft offers two flavors of AKS depending on how much control you need.
+- **AKS Automatic:** The "done for you" mode. Azure provides preconfigured defaults for the baseline setup, manages the system node pools, applies strict security baselines, and uses opinionated networking defaults. Upgrades and operations are managed by the service. Your focus here is just validating and tuning the defaults.
+- **AKS Standard:** The "build it yourself" mode. You make explicit setup choices, manage the system node pools yourself, and manually maintain the security and networking controls. Upgrades are entirely operator-directed. Your focus here is designing and configuring the platform controls from scratch.
+
+### 2. Cluster Operator Best Practices (The Landlord)
+If you are managing the platform, your job is to build the environment and keep the tenants secure. Operators in Standard mode implement these directly, while Automatic mode operators focus on tuning the guardrails.
+
+#### Multi-tenancy and Isolation
+- **Cluster Isolation:** You must logically isolate different teams (tenants) sharing the same cluster using Kubernetes Namespaces. 
+- **Basic Scheduler Features:** Use Resource Quotas to ensure one team doesn't consume the entire cluster's resources. Implement Pod Disruption Budgets so that when nodes are upgraded, enough pods stay online to keep the app running.
+- **Advanced Scheduler Features:** Use Taints and Tolerations, Node Selectors, and Affinity rules. For example, you can "taint" a node that has an expensive GPU so only pods that explicitly "tolerate" that taint can be scheduled on it. You can also use inter-pod anti-affinity to force Kubernetes to spread your API replicas across different physical nodes to avoid single points of failure.
+
+#### Authentication and Authorization
+- **Cluster Authentication & Authorization:** Integrate the cluster with Microsoft Entra ID (Azure AD). Use Kubernetes Role-Based Access Control (RBAC) and Azure RBAC to ensure users only have the exact permissions they need to do their jobs. Implement Pod Identities so the applications themselves can securely authenticate to Azure services.
+
+#### Security
+- **Cluster Security & Upgrades:** Secure access to the Kubernetes API server (e.g., using authorized IP ranges). Limit container access to underlying node resources, and establish a clear strategy for managing node upgrades and reboots.
+- **Container Image Management:** Secure your image runtimes and set up automated builds that trigger whenever the underlying base image gets an update.
+
+#### Network and Storage
+- **Network Connectivity:** Choose the right network model (like Azure CNI). Implement Ingress controllers, use Web Application Firewalls (WAF) to filter malicious traffic, and heavily secure or disable node SSH access.
+- **Storage and Backups:** Choose the appropriate storage type and node size for your workloads. Configure dynamic volume provisioning so storage is created automatically when pods request it, and ensure data backups are configured for stateful applications.
+
+#### Business Continuity and Disaster Recovery
+- Ensure your applications can survive regional outages by deploying across Azure region pairs. Use Azure Traffic Manager to route traffic between multiple clusters, and enable geo-replication for your container images in Azure Container Registry so they are available globally.
+
+### 3. Application Developer Best Practices (The Tenant)
+If you are writing the application code, your job is to be a good neighbor within the cluster.
+
+- **Resource Management:** You must explicitly define how much CPU and Memory your pods need (requests) and the maximum they are allowed to use (limits). Without these, a memory leak in your code could crash the node and take down other applications. You should also properly configure your local development tools and build checks for application issues.
+- **Pod Security:** Never hardcode passwords or API keys in your container images. Secure access to resources by limiting credential exposure, using Pod Identities, and pulling secrets directly from digital key vaults (like Azure Key Vault) at runtime.
+- **Deployment Reliability:** Follow commonly used deployment and testing patterns. Test your application thoroughly before deployment to ensure quality and compatibility, which prevents bugs from affecting the cluster's overall performance.
 
 ## Additional Resources
 

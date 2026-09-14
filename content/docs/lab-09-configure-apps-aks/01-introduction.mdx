@@ -1,0 +1,32 @@
+---
+title: Introduction
+description: The core concepts of configuring AI applications on Azure Kubernetes Service.
+---
+
+Hardcoding connection strings, passwords, or storing data directly inside a container is a major anti-pattern in cloud-native development. Containers are ephemeral—meaning they can be destroyed and recreated at any time. If you store data inside the container, it will be lost forever. If you hardcode passwords, anyone with access to the Docker image can compromise your system.
+
+## Visual Flow
+
+<Mermaid chart={`
+flowchart TB
+    subgraph cluster[AKS Cluster]
+        configmap[ConfigMap]
+        secret[Secret]
+        pod[Application Pod]
+        storage[(Persistent Volume)]
+        
+        configmap -.->|injects| pod
+        secret -.->|mounts| pod
+        pod <-->|reads/writes| storage
+    end
+`} />
+
+The diagram illustrates how an Application Pod in AKS pulls in non-sensitive configuration from a ConfigMap, securely mounts passwords from a Secret, and reads/writes persistent data to an external Persistent Volume so it survives pod restarts.
+
+## Architectural Insights for AI Workloads
+
+While basic containerization gets your app running, enterprise-grade AI workloads require specific architectural decisions to operate securely and at scale:
+
+- **The "Cold Start" Latency Killer:** AI inference APIs often rely on massive machine learning models (e.g., 5GB+ weights). If your pod downloads this model from the internet every time it starts, scaling out will cause massive latency spikes. By downloading the model once to a **Persistent Volume**, new pods instantly mount the physical disk, dropping cold-start latency from minutes to seconds.
+- **Predictable Rollouts (GitOps):** If an upstream API endpoint changes, you shouldn't have to rebuild your entire Docker image. By externalizing the URL to a **ConfigMap**, your Docker image remains immutable. You simply update the ConfigMap YAML, allowing for instant, predictable configuration changes without risking code regression.
+- **The Danger of Environment Variables:** It is a common mistake to inject Secrets (like OpenAI API keys) as environment variables. If the application crashes, error loggers often dump all environment variables into plain-text logs. Instead, Kubernetes allows you to mount **Secrets** as hidden files on a temporary in-memory drive. The application reads the file to authenticate, keeping the credential out of the environment space entirely.

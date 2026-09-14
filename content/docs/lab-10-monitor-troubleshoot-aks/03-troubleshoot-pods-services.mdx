@@ -1,0 +1,72 @@
+---
+title: 03 - Troubleshoot pods and services
+description: Learn how to troubleshoot pod and Service issues that affect AI APIs and workers.
+---
+
+In the last unit, we talked about using Logs and Metrics to spot a problem. This unit is about what you do *after* you spot the problem. How do you find the root cause?
+
+Here are the 4 most important concepts you need to understand deeply.
+
+## 1. The "Big Three" Pod Errors
+
+When you run `kubectl get pods`, the `STATUS` column is the first place you look. If a Pod is broken, it will usually be stuck in one of these three states:
+
+*   **`ImagePullBackOff`**: 
+    *   *What it means:* Kubernetes tried to download your Docker image from the registry (like Azure Container Registry), but failed. It will wait a few seconds and try again (backing off).
+    *   *Root Cause:* 99% of the time, this is a typo in the image name (e.g., `nginx:1.2.3` instead of `nginx:1.2.4`), or your AKS cluster doesn't have the correct password/identity to access the private registry.
+*   **`CrashLoopBackOff`**:
+    *   *What it means:* Kubernetes successfully downloaded the image and started the container, but the application immediately crashed. Kubernetes restarted it, and it crashed again. It's stuck in an infinite loop of crashing.
+    *   *Root Cause:* A bug in your code, a missing environment variable, or a database connection string that is refusing the connection on startup. (Use `kubectl logs` to see the crash error!).
+*   **`Pending`**:
+    *   *What it means:* The Pod hasn't even started downloading the image yet. It's waiting in line.
+    *   *Root Cause:* The cluster is full. If your Pod requests 8GB of RAM, and all your physical servers only have 2GB of RAM free, the Pod will stay `Pending` forever until you add more servers.
+
+## 2. `kubectl describe` (The Detective's Tool)
+
+If `kubectl logs` tells you what your *application* is doing, `kubectl describe` tells you what *Kubernetes* is doing to your application.
+
+```bash
+kubectl describe pod my-ai-pod -n ai-workloads
+```
+
+When you run this, scroll to the very bottom to the **Events** section. This is a chronological log of Kubernetes actions. You will see things like:
+*   `Warning: FailedScheduling (Insufficient memory)`
+*   `Warning: Unhealthy (Readiness probe failed: HTTP 500)`
+*   `Normal: Pulled (Successfully pulled image)`
+
+If a Pod is acting weird but the application logs look perfectly fine, the **Events** section in `describe` will almost always reveal the true cause.
+
+## 3. Getting Inside the Box (`kubectl exec`)
+
+Sometimes, looking at logs isn't enough. You need to physically step inside the container to see what the environment looks like.
+
+```bash
+# This command opens an interactive terminal (-it) running standard shell (/bin/sh) inside the pod
+kubectl exec -it my-ai-pod -n ai-workloads -- /bin/sh
+```
+
+**Why do this?**
+Imagine your AI app says "Cannot find model file". You can `exec` into the pod, type `ls /app/models/`, and visually confirm if the file actually mounted correctly or if the directory is empty. You can also type `env` to see if a specific environment variable actually got injected.
+
+<Callout type="warn" title="Warning">
+Never manually fix files while inside `exec`. If the pod restarts, your manual fixes are erased forever. Find the problem using `exec`, but permanently fix the problem in your YAML code!
+</Callout>
+
+## 4. The "Missing Link": Services and Endpoints
+
+Here is the most common mistake beginners make: "My Pod says `Running`, the logs look perfect, but when I open the website, it just loads forever!"
+
+If the Pod is healthy, the problem is the **Service**. A Kubernetes Service acts as a Load Balancer, but how does the Service know which Pods to send traffic to? **Labels.**
+
+If your Pod has the label `app: my-ai-api`, your Service must have a `selector` looking for exactly `app: my-ai-api`. If there is a typo (e.g., `app: my-api`), the Service will blindly route traffic to nowhere.
+
+**How to verify this:**
+Kubernetes creates a list of actual IP addresses it found matching the labels. This list is called an `EndpointSlice`.
+
+```bash
+# Ask Kubernetes what IP addresses the Service is routing to
+kubectl describe service my-ai-service -n ai-workloads
+```
+Look for the `Endpoints:` field. 
+*   If it lists IP addresses (like `10.244.1.5, 10.244.2.8`), the connection is good.
+*   If it says `<none>`, your Labels are mismatched! The Service cannot find your Pods.

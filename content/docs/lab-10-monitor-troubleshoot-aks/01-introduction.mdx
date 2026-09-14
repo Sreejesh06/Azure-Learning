@@ -1,0 +1,37 @@
+---
+title: 01 - Introduction
+description: Introduction to monitoring and troubleshooting apps on AKS.
+---
+
+Welcome to the world of Kubernetes monitoring! This module is where we move from just *deploying* code to actually *operating* it in the real world.
+
+## 1. The Core Concept: Why do we need to monitor?
+
+**The Problem:** When you deploy an AI model or a web app to Kubernetes, you can't just close your laptop and walk away. Things go wrong in the cloud:
+*   **Latency Spikes:** Your AI model suddenly takes 5 seconds to answer instead of 1 second.
+*   **Resource Saturation:** Your application suddenly receives 10,000 requests and runs out of RAM (Memory) or CPU.
+*   **Inference Failures:** The background worker tries to talk to the database, but the connection fails.
+
+**The Solution:** Monitoring is how you get x-ray vision into your cluster. It allows you to see the problem *before* your users start calling you to complain.
+
+## 2. The Two Weapons of a DevOps Engineer
+
+When something breaks on Azure Kubernetes Service (AKS), you have two primary tools to investigate the crime scene. Professional engineers use *both* of them depending on the situation.
+
+### Weapon A: The Visual Tool (The Azure Portal)
+The Azure Portal gives you a graphical dashboard right in your web browser. 
+*   **What it has:** The "Workloads blade" (shows all your running apps), "Live Logs" (a streaming text feed of what your app is doing), and the "Diagnose and solve problems" wizard.
+*   **When to use it:** When you need a quick, visual assessment. It's the equivalent of checking the dashboard lights in your car to see if the engine light is on.
+
+### Weapon B: The Command Line (`kubectl`)
+`kubectl` is the command-line tool you type into your terminal to talk directly to the Kubernetes brain.
+*   **What it has:** Commands that let you drill down into the absolute lowest level of the cluster, look at internal events, and extract raw data.
+*   **When to use it:** When you need a deep, granular investigation. It's the equivalent of plugging a laptop into the car's engine computer to read the exact error codes. 
+
+## 3. What We Are Going to Build (The Workflow)
+
+Imagine you deployed an AI model to summarize text. Suddenly, it stops working. This module is going to teach you the exact step-by-step workflow a professional engineer uses to fix it:
+
+1.  **Check the Vitals (Logs & Metrics):** First, we look at the logs to see if the code is throwing a specific error (like "Database Timeout").
+2.  **Check the Engine (Pods & Services):** If the code looks fine, we investigate the Pods. Did the Pod crash because it ran out of memory? Is the Service routing traffic to a dead Pod?
+3.  **Check the Roads (Connectivity):** If the Pod is healthy, we check the network. Is the front door (Ingress) blocked? Is the internet traffic actually making it to the Pod?

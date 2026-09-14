@@ -1,0 +1,208 @@
+---
+title: 04 - Persistent Storage
+description: Learn how to attach durable stateful storage to stateless pods using PersistentVolumeClaims.
+---
+
+## 1. The Core Concept: The Ephemeral Problem
+
+**The Problem:** By default, containers are "ephemeral" (temporary). If you write a file to a container's hard drive and that container crashes or restarts, **the file is permanently deleted.** 
+
+**Why this is bad:** If you are running an AI service that needs to save conversation history, or a database that needs to save customer data, you can't have your data wiped out every time a server reboots.
+
+**The Solution (PV and PVC):** Kubernetes solves this by keeping the "hard drive" separate from the "computer" (the Pod). 
+*   **PersistentVolume (PV):** The actual physical hard drive in the cloud (e.g., an Azure Disk).
+*   **PersistentVolumeClaim (PVC):** Your application's "ticket" requesting storage (e.g., "I need a 10GB hard drive").
+
+<Mermaid chart={`
+flowchart LR
+  subgraph Azure["Azure Cloud"]
+    PV["Persistent Volume (PV)\n(e.g., Azure Disk)"]
+  end
+  subgraph AKS["AKS Cluster"]
+    PVC["PersistentVolumeClaim\n(The Ticket)"]
+    subgraph Pod["Worker Pod"]
+      App["Application Code"]
+      Mount["Mounted Directory\n(/app/data)"]
+    end
+  end
+  
+  PVC -.->|Dynamically provisions & binds| PV
+  Mount -->|Uses claim| PVC
+  App -->|Reads/Writes durable data| Mount
+  
+  style PV fill:#0072c6,color:#fff
+  style PVC fill:#ffb900,color:#000
+  style Mount fill:#107c10,color:#fff
+`} />
+
+## 2. Deep Dive: The Azure Storage Options
+
+To truly master Kubernetes storage, we have to look past the marketing terms and understand **how the data actually moves through the cables.** When you ask Azure for a hard drive, you must choose between three distinct infrastructures:
+
+### A. Block Storage (Azure Disk)
+**The Concept:** Block storage is "dumb" storage. It is just a raw expanse of bytes with no concept of files or folders. The operating system running your database (like Postgres) must format it and manage the files itself.
+
+**The Architecture:** Azure physically attaches a virtual hard drive to the underlying Virtual Machine (your AKS Node) at the hypervisor level.
+
+<Mermaid chart={`
+flowchart TD
+  subgraph Cloud
+    Disk["Azure Managed Disk\n(Raw Blocks)"]
+  end
+  subgraph Node["AKS Node (Virtual Machine)"]
+    OS["Host OS Filesystem\n(ext4/xfs)"]
+    Pod["Database Pod\n(ReadWriteOnce)"]
+  end
+  
+  Disk ===|Direct SCSI/Block I/O| OS
+  OS -->|Volume Mount| Pod
+  
+  style Disk fill:#0072c6,color:#fff
+  style OS fill:#ffb900,color:#000
+`} />
+
+*   **Access Mode (`ReadWriteOnce`):** Because it's raw blocks, if Server A and Server B tried to write data to the disk at the same time, they would overwrite each other's bits and instantly destroy the hard drive. 
+*   **Best for:** Databases that demand raw, unhindered access to the disk to write data as fast as physically possible without a network getting in the way.
+
+### B. File Storage (Azure Files)
+**The Concept:** File storage is a managed NAS (Network Attached Storage). The storage system itself manages the files, folders, and permissions. You don't format it; you just send files to it over a network.
+
+**The Architecture:** The storage lives completely outside your cluster. Your Pods communicate with it over standard network protocols (like SMB or NFS).
+
+<Mermaid chart={`
+flowchart TD
+  subgraph Cloud
+    NAS["Azure Files\n(Managed Filesystem)"]
+  end
+  subgraph AKS["AKS Cluster"]
+    Pod1["Web Pod A\n(Node 1)"]
+    Pod2["Web Pod B\n(Node 2)"]
+    Pod3["Web Pod C\n(Node 3)"]
+  end
+  
+  NAS <..->|Network Protocol (SMB/NFS)| Pod1
+  NAS <..->|Network Protocol (SMB/NFS)| Pod2
+  NAS <..->|Network Protocol (SMB/NFS)| Pod3
+  
+  style NAS fill:#0072c6,color:#fff
+`} />
+
+*   **Access Mode (`ReadWriteMany`):** The Azure Files service acts as a traffic cop. If Pod 1 and Pod 2 try to edit \`config.txt\` at the exact same millisecond, the traffic cop safely locks the file and queues the requests so nothing gets corrupted.
+*   **The Trade-off:** Because data travels over the network, it has higher latency (lag) than a raw block disk. 
+*   **Best for:** Shared assets (like user-uploaded profile pictures across 10 web servers) or shared configuration files.
+
+### C. Container Storage (Azure Container Storage)
+**The Concept:** This is **Software-Defined Storage (SDS)**. Standard cloud disks (Block and File) live in a different server rack than your cluster, so data has to travel over cables. Container Storage fixes this by pooling the ultra-fast NVMe physical drives soldered directly into the motherboard of your AKS servers.
+
+**The Architecture:** A specialized software layer runs *inside* your cluster. It gathers all the local physical drives from all your nodes, creates a giant virtual pool, and serves it directly to your Pods using **NVMe-oF** (NVMe over Fabrics).
+
+<Mermaid chart={`
+flowchart TD
+  subgraph NodeA["AKS Node A"]
+    NVMeA[("Physical Local NVMe")]
+  end
+  subgraph NodeB["AKS Node B"]
+    NVMeB[("Physical Local NVMe")]
+  end
+  
+  subgraph SDS["Azure Container Storage (Software Layer)"]
+    Pool{"Virtual Storage Pool"}
+  end
+  
+  subgraph Pod["AI / High-Speed Pod"]
+    App["Application"]
+  end
+
+  NVMeA -->|Hardware Speed| Pool
+  NVMeB -->|Hardware Speed| Pool
+  Pool ===|NVMe-oF (Sub-millisecond Latency)| App
+  
+  style SDS fill:#ffb900,color:#000
+  style App fill:#107c10,color:#fff
+`} />
+
+*   **Why it's the future:** It gives you the raw, blistering speed of bare-metal hardware but retains the safety of the cloud (the software layer instantly copies data to Node B in case Node A catches on fire).
+*   **Best for:** Extreme workloads. Heavy AI model training, massive NoSQL databases, or environments where every millisecond of disk lag costs money.
+
+## 3. Step 1: Claiming the Storage (The PVC Code)
+
+Before your app can use storage, you have to request it from Azure by creating a PersistentVolumeClaim (PVC).
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce   # We are requesting an Azure Disk (single node access)
+  resources:
+    requests:
+      storage: 10Gi   # We want exactly 10 Gigabytes of space
+  storageClassName: default # This tells Azure to use the default 'managed-csi' (Standard HDD/SSD)
+```
+
+**Explaining the Code:**
+*   You submit this ticket to Kubernetes. 
+*   Kubernetes looks at `storageClassName: default` and talks to Azure behind the scenes.
+*   Azure automatically provisions a brand new 10GB Azure Disk in your cloud account and "binds" it to this claim. 
+
+## 4. Step 2: Attaching the Storage to Your App (Deployment Code)
+
+Now that you own a 10GB hard drive (the PVC), you need to plug it into your application.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-api
+  template:
+    metadata:
+      labels:
+        app: web-api
+    spec:
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: data-pvc   # 1. Grab the "ticket" we created earlier
+            
+      containers:
+        - name: api
+          image: myregistry.azurecr.io/web-api:v1
+          volumeMounts:
+            - name: data-volume
+              mountPath: /app/data # 2. Plug the drive into this specific folder
+```
+
+**Explaining the Code:**
+1.  **`volumes` block:** We declare a volume named `data-volume` and tell Kubernetes its physical backing is the `data-pvc` claim we created in Step 1.
+2.  **`volumeMounts` block:** We tell the container to take that volume and plug it into the `/app/data` folder inside the container. 
+*   **Result:** Whenever your app writes a file to `/app/data/user.txt`, it isn't saving it to the temporary container. It is saving it directly to the highly durable Azure Disk. If the Pod crashes and restarts, Kubernetes unplugs the Azure Disk from the dead Pod and plugs it right into the new one!
+
+## 5. Verification Commands
+
+How do you prove that your data actually survives a crash?
+
+```bash
+# 1. Apply your files
+kubectl apply -f pvc.yaml
+kubectl apply -f deployment.yaml
+
+# 2. Check if Azure successfully created the hard drive (Look for Status: Bound)
+kubectl describe pvc data-pvc 
+
+# 3. List your pods
+kubectl get pods
+```
+
+**The Ultimate Persistence Test:**
+1.  Use `kubectl exec` to log into a running Pod.
+2.  Write a file to your mount path: `echo "Hello World" > /app/data/test.txt`
+3.  Force delete the Pod: `kubectl delete pod <pod-name>`
+4.  Wait for Kubernetes to automatically start a new replacement Pod.
+5.  `kubectl exec` into the *new* Pod and check the folder. The `test.txt` file will still be there!

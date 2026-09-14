@@ -3,14 +3,15 @@
 ## Visual Flow
 
 <Mermaid chart={`
-architecture-beta
-    group cluster[AKS Cluster]
-    service api[AKS API Pod] in cluster
-    service lb[Azure Load Balancer] in cluster
-    service registry[Azure Container Registry]
+flowchart TB
+    subgraph cluster[AKS Cluster]
+        lb[Azure Load Balancer]
+        api[AKS API Pod]
+    end
+    registry[(Azure Container Registry)]
     
-    lb:L -- R:api
-    api:T -- B:registry
+    lb --> api
+    api -.->|pulls image| registry
 `} />
 
 The diagram shows traffic entering through the Azure Load Balancer, which then routes it to the AKS API Pod. The Pod itself pulls its container image from the Azure Container Registry during deployment.
