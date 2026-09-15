@@ -72,7 +72,27 @@ kubectl top pods -n ai-workloads
 ```
 *   **Why use it?** It's instant. If the cluster is currently on fire, you run `kubectl top pods`, instantly see which Pod is eating 10GB of RAM, and delete it. You don't have time to load a web dashboard.
 
-## 4. The Senior Engineer's Master Workflow
+## 4. The Azure Monitoring Architecture (Under the Hood)
+
+Understanding *how* Azure actually stores all this data is crucial for querying it effectively and controlling your cloud costs. The Azure monitoring stack fundamentally splits data based on its type:
+
+### A. The Metrics Database
+Metrics are tiny, frequent numbers. They go into the **Azure Monitor Metrics Database**. 
+* **Platform Metrics:** Basic hardware metrics collected automatically (free).
+* **Managed Prometheus:** The industry standard. Azure scrapes detailed metrics from your containers and stores them here. You then connect **Azure Managed Grafana** to build beautiful dashboards.
+
+### B. The Log Analytics Workspace
+Logs are massive streams of text. They are sent to a highly searchable, big-data database called a **Log Analytics Workspace**. You query this using Kusto Query Language (KQL).
+* **Container Insights:** This runs an Azure Monitor Agent on your nodes to grab your application's `stdout`/`stderr` logs and ship them to the workspace.
+* **Control Plane Logs (Resource Logs):** These are the logs from the Kubernetes "brain" itself (e.g., who is talking to the API server). You use **Diagnostic Settings** to tell Azure to route these to your workspace.
+
+> **Pro-Tip: Save Money with Resource-Specific Mode** 
+> When routing Control Plane logs via Diagnostic Settings, always select **Resource-specific mode** instead of "Azure diagnostics mode". It puts the data into dedicated tables (like `AKSAudit` instead of one giant `AzureDiagnostics` table), which makes your KQL queries faster and your Azure bill significantly smaller!
+
+### C. AKS Automatic vs Standard
+If you deploy an **AKS Automatic** cluster, Azure configures Managed Prometheus, Container Insights, and Grafana by default. If you use **AKS Standard**, you are responsible for manually enabling these integrations via the Portal or CLI.
+
+## 5. The Senior Engineer's Master Workflow
 
 Here is how a real engineering team actually implements best practices for logging:
 

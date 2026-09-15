@@ -3,4 +3,181 @@ title: 05 - Exercise - Configure Apps
 description: Hands-on exercise to deploy ConfigMaps, Secrets, and PersistentVolumes on AKS.
 ---
 
-Content coming soon.
+## The "No Magic" Approach: Manual Deployment
+
+The official Microsoft Learn lab provides a Python script (`azdeploy.py`) that acts as a "magic button" to build everything. However, in the real world (and especially on a student account where you hit quota limits), you need to know *exactly* what is happening under the hood. 
+
+We will build the entire infrastructure manually using the Azure CLI. This will teach you the core concepts and help you avoid the dreaded `InsufficientQuota` errors.
+
+### Step 1: Prepare your Environment
+
+First, let's download the source code for the API we are going to deploy. Run this in your terminal:
+
+```bash
+# Download and unzip the project files
+curl -L -o aks-configure-python.zip https://github.com/MicrosoftLearning/mslearn-azure-ai/raw/main/downloads/python/aks-configure-python.zip
+unzip aks-configure-python.zip -d my-aks-project
+cd my-aks-project
+```
+
+Let's define some variables so we don't have to retype names. Choose a unique name for your registry (e.g., `mynameacr123`).
+
+```bash
+# Set variables (replace 'yournameacr123' with a unique name, no spaces/hyphens)
+RG="aks-student-rg"
+LOC="eastus" # eastus usually has the best student quotas
+ACR_NAME="yournameacr123" 
+AKS_NAME="aks-student-cluster"
+```
+
+### Step 2: Create the Resource Group & Container Registry (ACR)
+
+A Resource Group is just a logical folder for your resources. 
+Azure Container Registry (ACR) is your private Docker Hub. It's where we will store the application code before Kubernetes downloads it.
+
+```bash
+# Create the Resource Group
+az group create --name $RG --location $LOC
+
+# Create the Container Registry (Basic SKU is the cheapest)
+az acr create --resource-group $RG --name $ACR_NAME --sku Basic
+```
+
+### Step 3: Build and Push the Docker Image
+
+You have two options here, depending on your Azure account restrictions.
+
+**Option A: Cloud Build (ACR Tasks)**
+Azure can zip up your code and build the image in the cloud. However, Free/Student accounts often have this feature blocked (`TasksOperationsNotAllowed`) to prevent crypto-mining abuse.
+```bash
+# Cloud-build the image and tag it as 'latest'
+az acr build --registry $ACR_NAME --image aks-config-api:latest ./api
+```
+
+**Option B: Local Docker Build (Mac Apple Silicon Warning!)**
+If Option A fails, you can build the image locally and push it.
+
+> [!WARNING]
+> If you are on a Mac with an M-series chip (Apple Silicon), a standard `docker build` will create an ARM64 image. Azure AKS uses standard x86_64 VMs. If you push an ARM64 image, your Pods will crash with an `exec format error` (`CrashLoopBackOff`).
+
+To cross-compile for standard cloud servers, use the `--platform linux/amd64` flag:
+```bash
+az acr login --name $ACR_NAME
+docker buildx build --platform linux/amd64 -t $ACR_NAME.azurecr.io/aks-config-api:latest ./api --push
+```
+
+### Step 4: Create the AKS Cluster (Student Quota Friendly)
+
+Here is where the magic script usually fails for students. It tries to provision expensive, newer VMs (`Standard_D2s_v7`). We will tell AKS to use `Standard_B2s` (a cheaper burstable VM), and only 1 node to save money and stay within quota limits. 
+
+We also use `--attach-acr` which automatically gives Kubernetes the correct passwords (RBAC roles) to download images from your private registry!
+
+```bash
+# Create the cluster (This takes about 5-10 minutes!)
+az aks create \
+  --resource-group $RG \
+  --name $AKS_NAME \
+  --node-count 1 \
+  --node-vm-size Standard_B2s \
+  --generate-ssh-keys \
+  --attach-acr $ACR_NAME
+```
+
+Once it's done, download the "keys" to control the cluster.
+
+```bash
+# Connect kubectl to your new cluster
+az aks get-credentials --resource-group $RG --name $AKS_NAME
+```
+
+### Step 5: Configure Kubernetes Resources
+
+Now that the infrastructure exists, we need to configure Kubernetes. The project folder has a `k8s/` directory. Fill out those files with the following code:
+
+**1. ConfigMap (`k8s/configmap.yaml`)**
+ConfigMaps store non-sensitive data (like environments or names).
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+data:
+  STUDENT_NAME: "Azure Explorer"
+  API_VERSION: "1.0.0"
+  LOG_PATH: "/var/log/api"
+```
+
+**2. Secret (`k8s/secrets.yaml`)**
+Secrets store passwords. Using `stringData` allows us to type plain text, and Kubernetes will automatically Base64 encode it for us.
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-secrets
+type: Opaque
+stringData:
+  secret-endpoint: "https://my-backend.database.windows.net"
+  secret-access-key: "SuperSecretKey123!"
+```
+
+**3. Persistent Volume Claim (`k8s/pvc.yaml`)**
+A PVC is how a Pod asks for a hard drive. We are asking Azure to automatically provision a 1GB Azure Disk and attach it to our Pod for logs.
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-logs-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: managed-csi
+```
+
+**4. Update Deployment (`k8s/deployment.yaml`)**
+Open `k8s/deployment.yaml`. You need to replace `<YOUR_ACR_ENDPOINT>` with your actual ACR login server (e.g., `yournameacr123.azurecr.io`). 
+*Run `az acr show -n $ACR_NAME --query loginServer -o tsv` to get the exact URL.*
+
+### Step 6: Apply to the Cluster
+
+Apply everything to Kubernetes in the right order (Configuration first, then the Deployment that uses it):
+
+```bash
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secrets.yaml
+kubectl apply -f k8s/pvc.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+```
+
+Wait a few minutes for the Load Balancer to provision a public IP:
+```bash
+kubectl get svc aks-config-api-service -w
+```
+*(Press `Ctrl+C` to exit once an IP appears)*
+
+### Step 7: Testing and Troubleshooting
+
+Once the Public IP is provisioned, you can connect your client. But what if it times out? 
+
+**1. Check the Pod Status:**
+```bash
+kubectl get pods
+```
+If it says `CrashLoopBackOff`, the pod is constantly crashing. Because it's crashing, it is never added to the Service `Endpoints`, which causes the LoadBalancer to time out!
+
+**2. Read the Logs:**
+```bash
+kubectl logs deploy/aks-config-api
+```
+If you see `exec /usr/local/bin/uvicorn: exec format error`, you accidentally pushed an Apple Silicon (ARM64) image to an Azure VM (AMD64)! See Step 3 (Option B) to fix it, and then run `kubectl rollout restart deployment aks-config-api` to pull the new image.
+
+### Step 8: Clean Up!
+
+When you are done testing, **delete everything** so you don't run out of student credits.
+
+```bash
+az group delete --name $RG --yes --no-wait
+```
