@@ -1,0 +1,152 @@
+---
+title: 04 - Query Azure Cosmos DB for NoSQL
+description: Learn how to write SQL queries to retrieve documents from Cosmos DB and understand query execution architecture.
+---
+
+# Query Azure Cosmos DB for NoSQL
+
+Azure Cosmos DB for NoSQL supports a rich SQL dialect for querying JSON documents. This makes it intuitive for developers to query hierarchical, schema-free data. Understanding how these queries execute across the distributed database infrastructure is critical for optimizing performance and Request Unit (RU) consumption.
+
+## Basic Queries and Filtering
+
+The basic structure of a query in Cosmos DB uses standard SQL syntax. You can filter results using the `WHERE` clause:
+
+```sql
+SELECT c.id, c.title, c.content
+FROM c
+WHERE c.categoryId = "AI_Docs"
+```
+*(Here `c` is an alias for the container.)*
+
+## Parameterized Queries
+
+When querying from an application, always use parameterized queries. This prevents SQL injection vulnerabilities and allows the Cosmos DB engine to cache and reuse the query execution plan.
+
+```python
+query = "SELECT * FROM c WHERE c.categoryId = @categoryId"
+parameters = [
+    {"name": "@categoryId", "value": "AI_Docs"}
+]
+
+items = list(container.query_items(
+    query=query,
+    parameters=parameters,
+    enable_cross_partition_query=False
+))
+```
+
+---
+
+## Query Execution Architecture
+
+To optimize query performance, you must understand how Cosmos DB routes requests to its underlying physical partitions.
+
+### 1. Single-Partition Query Routing
+
+**Technical Scenario:** An e-commerce application querying for a specific user's orders, where `userId` is the configured partition key for the container.
+
+<Mermaid chart={`
+graph TD
+    Client[Python SDK Client]
+    Gateway((Cosmos DB Gateway))
+    
+    subgraph Physical Partitions
+        P1[(Partition A\nRange: 0x00 - 0x3F)]
+        P2[(Partition B\nRange: 0x40 - 0x7F)]
+        P3[(Partition C\nRange: 0x80 - 0xFF)]
+    end
+
+    Client -- "1. Query + PartitionKey='user_123'" --> Gateway
+    Gateway -- "2. Routing Table Evaluation" --> P2
+    P2 -- "3. Local Execution" --> Gateway
+    Gateway -- "4. Return Results" --> Client
+
+    style Client fill:#2D3748,stroke:#4FD1C5,stroke-width:2px,color:#fff
+    style Gateway fill:#4A5568,stroke:#63B3ED,stroke-width:2px,color:#fff
+    style P2 fill:#276749,stroke:#48BB78,stroke-width:4px,color:#fff
+    style P1 fill:#2D3748,stroke:#718096,stroke-width:1px,color:#A0AEC0
+    style P3 fill:#2D3748,stroke:#718096,stroke-width:1px,color:#A0AEC0
+`} />
+
+**Execution Flow:**
+1. The Python SDK sends the query and explicitly includes the partition key value (`user_123`) in the request metadata.
+2. The Cosmos DB Gateway evaluates the partition key against its internal routing table to compute the exact physical partition containing the target data.
+3. The query is routed directly to that single physical node, which executes the query locally against its data engine.
+4. The results are returned to the client. This is the most efficient execution path, consuming the minimum necessary CPU, IO, and Request Units (RUs).
+
+### 2. Cross-Partition (Fan-Out) Query Routing
+
+**Technical Scenario:** An application querying for all orders placed in the last 24 hours across the entire system, without filtering by the `userId` partition key.
+
+<Mermaid chart={`
+graph TD
+    Client[Python SDK Client]
+    Gateway((Cosmos DB Gateway))
+    
+    subgraph Physical Partitions
+        P1[(Partition A)]
+        P2[(Partition B)]
+        P3[(Partition C)]
+    end
+
+    Client -- "1. Query (No Partition Key)" --> Gateway
+    
+    Gateway -- "2. Broadcast / Fan-Out" --> P1
+    Gateway -- "2. Broadcast / Fan-Out" --> P2
+    Gateway -- "2. Broadcast / Fan-Out" --> P3
+    
+    P1 -. "3. Local Results" .-> Gateway
+    P2 -. "3. Local Results" .-> Gateway
+    P3 -. "3. Local Results" .-> Gateway
+    
+    Gateway -- "4. Buffer & Merge in Memory" --> Gateway
+    Gateway -- "5. Return Aggregate Results" --> Client
+
+    style Client fill:#2D3748,stroke:#4FD1C5,stroke-width:2px,color:#fff
+    style Gateway fill:#9B2C2C,stroke:#FC8181,stroke-width:3px,color:#fff
+    style P1 fill:#742A2A,stroke:#F56565,stroke-width:2px,color:#fff
+    style P2 fill:#742A2A,stroke:#F56565,stroke-width:2px,color:#fff
+    style P3 fill:#742A2A,stroke:#F56565,stroke-width:2px,color:#fff
+`} />
+
+**Execution Flow:**
+1. The client issues a query that does not specify a partition key.
+2. Because the Gateway cannot determine which physical partition holds the matching data, it broadcasts (fans out) the query to all active physical partitions in the container.
+3. Each physical node executes the query against its local data and returns the partial results to the Gateway.
+4. The Gateway buffers the incoming data in memory. If an `ORDER BY` clause is present, the Gateway performs a distributed merge-sort across all result sets.
+5. The final aggregate result set is returned to the client. This operation scales poorly as data volume and physical partition count increase, resulting in high RU consumption and elevated latency.
+
+### 3. Pagination and State Management
+
+**Technical Scenario:** A REST API endpoint returning a large dataset of products to a frontend application, requiring chunked responses to prevent memory exhaustion and timeout errors.
+
+<Mermaid chart={`
+sequenceDiagram
+    autonumber
+    participant Client as Python SDK
+    participant GW as Cosmos DB Gateway
+    participant Node as Data Partition Node
+    
+    Client->>GW: HTTP POST Query (max_item_count=50)
+    activate GW
+    GW->>Node: Execute Query (Limit 50)
+    Node-->>GW: Items 1-50 + Execution State Index
+    GW-->>Client: HTTP 200: Items 1-50 + [ContinuationToken A]
+    deactivate GW
+    
+    Note over Client: Client processes first data block
+    
+    Client->>GW: HTTP POST Query + Header: [ContinuationToken A]
+    activate GW
+    GW->>Node: Resume Query Execution from Token Index
+    Node-->>GW: Items 51-100 + Execution State Index
+    GW-->>Client: HTTP 200: Items 51-100 + [ContinuationToken B]
+    deactivate GW
+`} />
+
+**Execution Flow:**
+1. The client issues a query specifying a `max_item_count` limit.
+2. The database engine executes the query, retrieving the requested block of items. Crucially, it generates a `ContinuationToken`. This token is an encoded string containing the internal execution state and index pointer where the database paused execution.
+3. The database returns the items and the token, then terminates the operation. Cosmos DB does not maintain persistent connection state between requests.
+4. When the client requires the next block of data, it re-issues the identical query, appending the `ContinuationToken` in the request headers.
+5. The database decodes the token, resumes execution from the precise index pointer, and returns the next block alongside a new token.

@@ -1,0 +1,162 @@
+---
+title: 03 - Implement the Azure Cosmos DB for NoSQL SDK
+description: Learn how to connect and perform operations using the Cosmos DB Python SDK, including authentication, client reuse, and CRUD operations.
+---
+
+# Implement the Azure Cosmos DB for NoSQL SDK
+
+If we are building an AI application, we need an efficient, production-ready data access layer. The Azure Cosmos DB Python SDK (`azure-cosmos`) handles connection management, request routing, and failovers behind the scenes. Here is how you implement it.
+
+## 1. Connecting & Authentication (The Right Way)
+
+The `CosmosClient` is the engine that handles connection pooling. You can connect using a master key, but the **production standard is Microsoft Entra ID (Azure AD)**.
+
+Here is the exact code to connect securely using identity, so you never hardcode a password:
+
+```python
+from azure.cosmos import CosmosClient
+from azure.identity import DefaultAzureCredential
+
+endpoint = "https://goride-global-account.documents.azure.com:443/"
+
+# DefaultAzureCredential automatically uses your CLI login locally, 
+# and switches to Managed Identity in the cloud.
+credential = DefaultAzureCredential() 
+
+client = CosmosClient(endpoint, credential=credential)
+```
+*(Note: To use this, you must assign RBAC roles to your identity in Azure, like "Cosmos DB Built-in Data Contributor").*
+
+## 2. The Singleton Pattern (Connection Reuse)
+
+You should **never** create a `CosmosClient` for every request. If you do, your app will suffer from massive latency spikes because it has to establish a new secure connection every time. 
+
+Instead, you wrap it in a class and instantiate it *once* when your app starts:
+
+```python
+class CosmosService:
+    def __init__(self, endpoint: str):
+        credential = DefaultAzureCredential()
+        # Initialize the client ONCE
+        self._client = CosmosClient(endpoint, credential=credential)
+        
+        # Get references to the Database and Container.
+        # Note: These methods don't make network calls! They just create local reference objects.
+        self._database = self._client.get_database_client("CustomerFacingDB")
+        self._trips_container = self._database.get_container_client("Trips")
+
+    @property
+    def trips(self):
+        return self._trips_container
+
+# Create once at application startup, reuse everywhere
+cosmos_service = CosmosService("https://goride-global-account.documents.azure.com:443/")
+```
+
+## 3. Creating Resources Safely (Idempotency)
+
+If you are writing a script to set up a new environment, you need to physically create the databases and containers. 
+You *can* use `create_database()`, but it crashes if the database already exists. Instead, use the safe **`_if_not_exists`** methods so you can run the code repeatedly without errors.
+
+```python
+from azure.cosmos import PartitionKey, ThroughputProperties
+
+# Safely create the database
+database = client.create_database_if_not_exists(id="CustomerFacingDB")
+print(f"Database ready: {database.id}")
+
+# Safely create the container, setting the Partition Key and Autoscale Throughput
+trips_container = database.create_container_if_not_exists(
+    id="Trips",
+    partition_key=PartitionKey(path="/tripId"),
+    offer_throughput=ThroughputProperties(auto_scale_max_throughput=4000) # Autoscale 400-4000 RU/s
+)
+```
+
+## 4. Writing Data (Create, Upsert, Replace)
+
+When saving an item, the SDK gives us 3 distinct methods depending on our logic:
+
+**Method A: Strict Create** (Fails if it already exists)
+```python
+from azure.cosmos import exceptions
+
+trip_data = {
+    "id": "trip_123",
+    "tripId": "trip_123",
+    "riderId": "rider_john",
+    "fare": 25.50
+}
+
+try:
+    response = trips_container.create_item(body=trip_data)
+    print(f"Created item: {response['id']}")
+except exceptions.CosmosResourceExistsError:
+    print("Error: This trip already exists!")
+```
+
+**Method B: Upsert** (Update or Insert - Highly used in AI Caching)
+If you don't care if it exists and just want to blindly overwrite it or create it, use upsert:
+```python
+trips_container.upsert_item(body=trip_data)
+```
+
+**Method C: Replace & Optimistic Concurrency**
+If two people try to update the exact same trip at the exact same millisecond, you can use the system property `_etag` to prevent one person from wiping out the other's changes.
+```python
+# Assume we already fetched `item` from the database
+item["fare"] = 30.00
+
+try:
+    # Notice we pass the current `_etag`. If the database's current etag 
+    # doesn't match this one, it means someone else changed it first!
+    trips_container.replace_item(
+        item=item["id"],
+        body=item,
+        if_match=item["_etag"] 
+    )
+except exceptions.CosmosAccessConditionFailedError:
+    print("Item was modified by another process. Please refresh and try again.")
+```
+
+## 5. Reading & Deleting Data (Point Reads)
+
+If you know the `id` and the `partition key` of an item, **never write a SQL query**. Instead, use a Point Read (`read_item`). It bypasses the query engine, routes directly to the physical server, and costs a perfectly optimized **1 RU** (the cheapest possible operation).
+
+```python
+try:
+    # Requires BOTH the item id and the partition key value
+    item = trips_container.read_item(
+        item="trip_123",
+        partition_key="trip_123"
+    )
+    print(f"Fare is: {item['fare']}")
+except exceptions.CosmosResourceNotFoundError:
+    print("Trip not found.")
+
+# Deleting works exactly the same way
+try:
+    trips_container.delete_item(
+        item="trip_123", 
+        partition_key="trip_123"
+    )
+except exceptions.CosmosResourceNotFoundError:
+    print("Nothing to delete.")
+```
+
+## 6. Tracking Your Request Units (RU) Costs
+
+Every time you run *any* of the operations above, Cosmos DB secretly sends back metadata telling you exactly how much money (RUs) it cost. You should log this to monitor your application's health.
+
+```python
+# Run an operation
+trips_container.upsert_item(body=trip_data)
+
+# Extract the hidden metadata from the last request
+headers = trips_container.client_connection.last_response_headers
+request_charge = headers['x-ms-request-charge']
+activity_id = headers['x-ms-activity-id']
+
+print(f"RU charge: {request_charge}")
+print(f"Activity ID: {activity_id}") # Crucial to give to Azure Support if there's a bug
+```

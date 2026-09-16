@@ -1,0 +1,144 @@
+---
+title: 02 - Explore Azure Cosmos DB for NoSQL
+description: Learn the core concepts of Azure Cosmos DB for NoSQL including resource hierarchy, partitioning, throughput, and request units.
+---
+
+# Explore Azure Cosmos DB for NoSQL
+
+Azure Cosmos DB for NoSQL organizes data through a hierarchy of resources. The decisions you make when creating databases and containers directly impact query performance and cost.
+
+## 1. The Resource Hierarchy (Real-World Example)
+
+Let's build a real-world application from scratch to see exactly how this technical hierarchy works in practice.
+Imagine we are building a ride-sharing app like Uber. We will call our app **"GoRide"**.
+
+Here is how the Azure Cosmos DB Resource Hierarchy is built for this exact application:
+
+![Azure Cosmos DB Entities](https://learn.microsoft.com/en-us/azure/cosmos-db/media/account-databases-containers-items/cosmos-entities.png)
+*Figure: The hierarchy of resources in an Azure Cosmos DB account.*
+
+### Layer 1: The Account (The Global Infrastructure)
+Before you write any code, you go to the Azure Portal and create a Cosmos DB Account named `goride-global-account`.
+*   **What you choose here:** You select the NoSQL API because your app needs to save data as flexible JSON documents. You also select two geographic regions: US East (where your main users are) and US West (for live backup).
+*   **What it gives you:** A secure connection URL like `https://goride-global-account.documents.azure.com:443/` and a secret password key. Your mobile app uses this URL to connect to the database.
+
+### Layer 2: The Database (The Application Folders)
+Inside your global account, you want to separate your data by business units. You create two separate Databases:
+1.  **CustomerFacingDB** (Holds everything needed to run the live app for riders and drivers).
+2.  **AnalyticsDB** (Holds internal business data, like financial reports and employee payroll).
+
+By creating two databases, you can completely block the customer-facing mobile app from ever touching your sensitive AnalyticsDB for security.
+
+### Layer 3: The Container (The Specialized Tables)
+Inside the `CustomerFacingDB` database, you need to store different types of information. You create three separate Containers (which are called Collections in the NoSQL API).
+This is where you must choose a **Partition Key** for each container so Cosmos DB knows how to split the data across its server network:
+
+*   **Container 1: RiderProfiles**
+    *   **Purpose:** Stores account details of people who book rides.
+    *   **Partition Key chosen:** `/riderId`. Because every rider has a unique ID, their profile data is cleanly distributed across servers.
+*   **Container 2: DriverLiveStatus**
+    *   **Purpose:** Tracks where drivers are right now.
+    *   **Partition Key chosen:** `/city`. Drivers in London go to one database server; drivers in New York go to another server. This keeps regional tracking lightning-fast.
+*   **Container 3: Trips**
+    *   **Purpose:** Stores the history of completed rides.
+    *   **Partition Key chosen:** `/tripId`.
+
+### Layer 4: The Item (The Actual Live Data)
+Now, a customer named John Doe books a ride in New York. The ride finishes, and your application creates a raw piece of data.
+This data is saved as an Item (a JSON document) inside the `Trips` container. It looks like this:
+
+```json
+{
+    "id": "trip_992831", 
+    "tripId": "trip_992831", 
+    "riderId": "rider_john_doe",
+    "driverId": "driver_alex_smith",
+    "fare": 25.50,
+    "currency": "USD",
+    "status": "Completed"
+}
+```
+
+## How the Hierarchy Works When Reading This Data
+When John Doe opens his app to look at his receipt for this trip, the application makes a super-fast request to Cosmos DB by following the map:
+1.  **Account:** Connect to `https://goride-global-account.documents.azure.com:443/`.
+2.  **Database:** Open the `CustomerFacingDB` folder.
+3.  **Container:** Open the `Trips` container.
+4.  **Item:** Look up the Partition Key `tripId = trip_992831`.
+
+Because Cosmos DB knows the exact partition key, it instantly flies straight to the specific server holding that exact receipt in less than 10 milliseconds, completely ignoring billions of other trips taken by other people worldwide.
+
+## 2. Deep Dive: Partition Keys and Logical Partitions
+
+Azure Cosmos DB distributes your data by taking the Partition Key you selected and creating a "Logical Partition" for every distinct value. 
+
+![Logical Partitions in Cosmos DB](https://learn.microsoft.com/en-us/azure/cosmos-db/media/partitioning-overview/logical-partitions.png)
+*Figure: Data items are grouped into Logical Partitions based on the value of their Partition Key. These logical partitions are then automatically distributed across physical servers.*
+
+Here is a visual representation of how the `Trips` container routes data using the `/tripId` partition key:
+
+<Mermaid chart={`
+graph TD
+    A["Incoming Request (Read trip_992831)"] --> B("Trips Container")
+    B --> C{"Partition Key Router"}
+    C -- "/tripId = trip_992831" --> D["Logical Partition: trip_992831"]
+    C -- "/tripId = trip_992832" --> E["Logical Partition: trip_992832"]
+    C -- "/tripId = trip_992833" --> F["Logical Partition: trip_992833"]
+    D --> G("Physical Server 1")
+    E --> H("Physical Server 2")
+    F --> G("Physical Server 1")
+    
+    style D fill:#d4edda,stroke:#28a745,stroke-width:2px
+`} />
+
+*   **High Cardinality is Good:** By choosing `/tripId`, we create millions of logical partitions. Cosmos DB can perfectly balance these millions of logical partitions across physical servers in the background.
+*   **Avoid Hot Partitions:** If we had chosen `/status` (where 99% of trips are "Completed"), one physical server would hold almost all the data, causing a massive bottleneck.
+
+
+## 3. Logical vs. Physical Partitions (The "Two Bucket" System)
+
+The biggest secret of Cosmos DB is that it uses *two* levels of partitioning: one you control, and one Microsoft controls.
+
+*   **Logical Partitions (What YOU control):** When you chose `/tripId` as your partition key, every unique `tripId` gets its own logical folder. 
+    *   *Rule 1:* A single logical partition can only hold up to **20 GB** of data.
+    *   *Rule 2:* Database transactions (like stored procedures) can only run on items *inside the same* logical partition.
+*   **Physical Partitions (What AZURE controls):** Think of these as the actual server hard drives in the Azure data center. A physical partition can hold up to **50 GB** and process up to **10,000 RU/s**. 
+    *   Azure silently grabs a bunch of your Logical Partitions and groups them onto a Physical Partition. 
+    *   **Splits:** If a physical server hits its 50GB limit, Cosmos DB seamlessly "splits" the server into two physical servers behind the scenes, dividing up the logical folders without any downtime.
+    *   **Replica Sets:** Every physical partition is backed by a cluster of at least 4 servers (replicas) constantly syncing data. If a server catches fire, your app stays online.
+
+## 4. Configuring Throughput (RU/s) & The Danger of Hot Partitions
+
+Cosmos DB measures capacity in **Request Units per second (RU/s)**. Think of an RU as a currency abstracting CPU, memory, and IOPS. You can provision throughput manually (fixed) or use Autoscale.
+
+**The Danger of Hot Partitions:**
+Let's say you paid Azure for **18,000 RU/s** for your `Trips` container, and Cosmos DB created **3 Physical Partitions** to hold your data. 
+
+Cosmos DB divides your RUs *evenly* across the physical servers:
+*   Physical Server A gets 6,000 RU/s
+*   Physical Server B gets 6,000 RU/s
+*   Physical Server C gets 6,000 RU/s
+
+If you chose a bad partition key like `/status` (where 95% of trips are "Completed"), almost all of your traffic will hit Physical Server A. Even though you paid for 18,000 RU/s, Physical Server A will hit its 6,000 RU limit and start **crashing/throttling your app**! The other 12,000 RUs sit completely empty. 
+
+## 5. Advanced Partitioning Strategies
+
+Sometimes, no single property is a perfect partition key. Cosmos DB offers advanced strategies:
+
+*   **Synthetic Keys:** If `CustomerId` creates hot partitions on heavy shopping days, create a fake property combining two fields: `CustomerId_OrderDate`. This forces the data to spread out across more servers.
+*   **Hierarchical Partition Keys (HPK):** If one massive customer generates 50 GB of orders, a standard `/CustomerId` key will break the 20 GB logical limit. HPK lets you specify up to 3 levels: `/CustomerId/OrderId`. This lets that massive customer's data span multiple physical partitions!
+*   **Global Secondary Indexes (GSI):** If you need to search your data by `/tripId` lightning-fast, but another team needs to search lightning-fast by `/driverId`, GSI creates a background copy of your data partitioned differently.
+
+## 6. The Cross-Partition Query Penalty
+
+Every database operation returns its RU cost in the response headers (`x-ms-request-charge`). 
+
+*   **Point Read:** Fetching a single item by its `id` and partition key costs about **1 RU** (fastest and cheapest).
+*   **Write:** Writing a 1KB item costs about **5-10 RUs**.
+*   **Cross-Partition Queries:** If your container is massive and spans 50 physical servers, running a query *without* including the Partition Key forces Cosmos DB to check all 50 servers. This adds a "tax" of 2-3 RUs per server checked. Your 3 RU query suddenly costs 150 RUs! Avoid these in large containers.
+
+## 7. Items and Optimistic Concurrency
+
+Every item you insert must have an `id` property. Cosmos DB also automatically injects system properties into your JSON, such as the `_etag`.
+
+**Optimistic Concurrency:** When updating a document, you can pass the `_etag`. If another process modified the document since you last read it (the `_etag` changed), your update will fail safely instead of blindly overwriting the other process's changes.

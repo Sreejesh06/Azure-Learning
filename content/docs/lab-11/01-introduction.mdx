@@ -1,0 +1,32 @@
+---
+title: 01 - Introduction
+description: Introduction to connecting and querying Azure Cosmos DB for NoSQL.
+---
+
+# Introduction
+
+AI applications require data stores that deliver consistent low-latency performance while scaling to meet unpredictable demand. Azure Cosmos DB for NoSQL provides a globally distributed, schemaless document database that supports flexible JSON data models and automatic indexing.
+
+## The Real-World Scenario
+
+Imagine you're a developer building an AI-powered recommendation engine for an e-commerce platform. Your application needs to:
+- Store product catalogs, user preferences, and interaction history as JSON documents.
+- Retrieve relevant products based on category, price range, and user attributes within milliseconds.
+
+**The Problem with Traditional Relational Databases:**
+- They struggle to keep up with peak traffic.
+- Schema changes require lengthy migrations that slow down feature development.
+
+**The Cosmos DB Solution:**
+- **Schema Flexibility:** Evolve your data models without downtime.
+- **Automatic Indexing:** By default, it automatically indexes properties in your items, reducing upfront setup. (You can still add custom composite indexes later for specific `ORDER BY` patterns).
+- **Independent Scaling:** Scale throughput independently of storage to handle traffic spikes during promotional events.
+
+## Learning Objectives
+
+In this module, you will learn how to structure data, connect securely, and write efficient queries that minimize Request Unit (RU) consumption while delivering results to AI models. Specifically, you will be able to:
+1. **Explain the Resource Model:** Understand how databases, containers, and items relate to each other.
+2. **Implement SDK Operations:** Connect to Azure Cosmos DB and perform CRUD operations on items using the Python `azure-cosmos` library.
+3. **Optimize Retrievals:** Select between point reads and queries based on performance requirements and access patterns.
+4. **Build SQL Queries:** Filter, project, and retrieve data from containers using SQL syntax.
+
