@@ -1,0 +1,32 @@
+---
+title: 01 - Introduction
+description: Introduction to implementing vector search on Azure Cosmos DB for NoSQL.
+---
+
+# Introduction
+
+AI applications increasingly rely on **semantic search** to find relevant information based on meaning rather than exact keyword matches. This module covers how to implement vector search directly in Azure Cosmos DB for NoSQL.
+
+By doing this, your AI applications can store high-dimensional vector embeddings alongside your standard JSON document data, allowing you to perform efficient similarity queries within the same database infrastructure.
+
+## The Real-World Scenario
+
+Imagine you are building an AI-powered knowledge base for a customer support team. 
+
+Agents need to find relevant documentation, past tickets, and troubleshooting guides using natural language. 
+- **The limitation of traditional keyword search:** Keyword search fails when the user describes the problem differently than the documentation does. For example, a search for `"can't connect to WiFi"` might completely miss an article titled `"wireless network troubleshooting"`.
+- **The semantic search solution:** Each document is passed through an embedding model (like Azure OpenAI) to convert its text into high-dimensional vectors that capture the semantic *meaning*. When an agent asks a question, that question is also converted to a vector. The system then finds documents with mathematically similar vectors. 
+
+As a result, you get relevant articles even if the exact terminology differs.
+
+Azure Cosmos DB for NoSQL integrates this capability, so you don't need to provision and sync a separate, dedicated vector database.
+
+## Learning Objectives
+
+In this module, you will learn to:
+1. **Store and retrieve vector embeddings** in Azure Cosmos DB containers with properly configured vector policies.
+2. **Execute vector similarity queries** using the `VectorDistance` function to find semantically similar documents.
+3. **Combine vector search with metadata filters** (like product category or date range) and full-text search using hybrid queries.
+4. **Implement change feed processing** to automatically refresh embeddings when the source documents change.
+
+> **Note:** The implementations rely on the `azure-cosmos` Python SDK. It's recommended to consult the official SDK documentation for the most up-to-date syntax.

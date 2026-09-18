@@ -1,0 +1,105 @@
+---
+title: 04 - Combine vector similarity results with metadata filtering
+description: Combine vector similarity results with metadata filtering.
+---
+
+# Combine vector similarity results with metadata filtering
+
+Pure vector search is awesome, but in the real world, users don't just search for "meaning"—they search for "meaning" *within a specific context*, like "networking issues from the last 30 days." 
+
+This module breaks down how to combine vector search with filters and hybrid search in Cosmos DB.
+
+## 1. Adding Standard Filters (`WHERE` clauses)
+
+**What it is:** You can mix traditional SQL `WHERE` clauses (dates, categories, status) right into your `VectorDistance` query.
+**Why we do it:** To give users precise results and to respect security rules (like only showing documents a user has access to).
+
+```sql
+SELECT TOP 10 
+    c.id, 
+    c.title, 
+    VectorDistance(c.embedding, @queryVector) AS SimilarityScore 
+FROM c 
+WHERE c.category = 'networking' AND c.createdDate > '2024-01-01'
+ORDER BY VectorDistance(c.embedding, @queryVector)
+```
+
+*Common Use Cases:* Filtering by Document Type, Date Ranges, Product IDs, or Access Permissions (using `ARRAY_CONTAINS`).
+
+## 2. The Magic of Pre-filtering vs. Post-filtering
+
+When you combine a `WHERE` clause with Vector Search, Cosmos DB's query optimizer has to make a choice on the fly:
+
+* **Pre-filtering (Before math):** It filters out the non-matching documents *first*, and only calculates vector math on what's left. 
+  * *Why it's good:* If your filter eliminates 99% of your data (e.g., filtering to just one user's data), the vector search runs incredibly fast.
+* **Post-filtering (After math):** It calculates vector math for everything, ranks them, and *then* removes ones that don't match the filter. 
+  * *The Catch:* If you ask for `TOP 10`, but 7 of the top 10 get eliminated by your filter, Cosmos DB might only return 3 results to the user.
+
+<Callout type="info" title="Automatic Optimization">
+You don't have to manually pick this; Cosmos DB's engine figures out the most efficient path based on your indexes and filter selectivity estimates.
+</Callout>
+
+## 3. The Ultimate Speed Hack: Partition Key Routing
+
+**What it is:** If you know the partition key (e.g., `category = 'networking'`), you should include it in your query AND explicitly pass it in your code.
+**Why we do it:** Normally, Cosmos DB has to ask *every single server* (partition) for its top vector matches (Cross-Partition Query). If you specify the partition key, it only talks to one server. This slashes your RU costs and latency dramatically.
+
+```python
+results = container.query_items(
+    query=query, 
+    parameters=parameters,
+    partition_key="networking" # <-- THIS IS THE SECRET SAUCE
+)
+```
+
+## 4. Hybrid Search (Vector + Full-Text)
+
+**What it is:** Semantic search is bad at exact matches. If a user searches for an exact error code like `"0x80070005"`, semantic search might fail because the meaning of "error" is too broad. Hybrid search combines Vector Math with traditional Keyword math.
+
+**How it works:** It uses a mathematical concept called **RRF (Reciprocal Rank Fusion)**. RRF runs both searches simultaneously, looks at the rankings of both, and merges them into one ultimate master list.
+
+**The Syntax:**
+Instead of `ORDER BY VectorDistance(...)`, you use `ORDER BY RANK RRF(...)`:
+
+```sql
+SELECT TOP 10 * FROM c 
+ORDER BY RANK RRF( 
+    VectorDistance(c.embedding, @queryVector), 
+    FullTextScore(c.content, @searchTerm1) 
+)
+```
+
+## 5. Controlling the Weights in Hybrid Search
+
+**What it is:** You can tell RRF which score is more important. 
+**Why we do it:** If your app is mostly natural language questions, you want vector to win. If it's a technical troubleshooting app, exact keywords might be more important.
+
+You pass an array of numbers representing weights: `[VectorWeight, FullTextWeight]`
+
+```sql
+ORDER BY RANK RRF( 
+    VectorDistance(...), 
+    FullTextScore(...), 
+    [2, 1]  -- Vector score counts twice as much as Full-Text score
+)
+```
+
+## 6. Multi-Vector Search
+
+**What it is:** You can have multiple embeddings in one document (e.g., one embedding for the `title` and a separate embedding for the `content`). 
+**Why we do it:** A title summarizes the main topic, while content provides the details. You can use RRF to score against both vectors simultaneously to find the absolute best match.
+
+```sql
+ORDER BY RANK RRF( 
+    VectorDistance(c.titleEmbedding, @queryVector), 
+    VectorDistance(c.contentEmbedding, @queryVector) 
+)
+```
+
+## 7. The Performance Reality Check (Trade-offs)
+
+Adding filters and hybrid search isn't free. 
+
+* **Indexing is mandatory:** If you filter by `c.status`, but didn't index the `status` property, Cosmos DB will do a slow, expensive full-scan.
+* **Hybrid is heavy:** Calculating both Vector and Full-Text scores requires more compute power (RUs) than just doing one. Don't use it everywhere by default.
+* **Size matters:** A query that is fast on 1,000 documents might be incredibly slow and expensive on 1,000,000 documents. Always look at the `x-ms-request-charge` header to see your true RU cost.

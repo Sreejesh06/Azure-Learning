@@ -35,6 +35,49 @@ items = list(container.query_items(
 ))
 ```
 
+## Data Shaping and Projections
+
+Cosmos DB allows structural transformation of returned JSON documents using projections. The `SELECT` clause can define custom JSON object structures or extract scalar arrays using the `VALUE` keyword, reducing network payload size and client-side deserialization overhead.
+
+```sql
+SELECT VALUE { 
+    "documentId": c.id, 
+    "isPublished": c.status = "published"
+} 
+FROM c
+```
+
+## Aggregation Functions
+
+The SQL dialect includes standard aggregate functions (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`). These functions execute cross-document statistical computations directly on the database engine. Since aggregations require scanning all documents matching the filter criteria, they consume Request Units proportionally to the volume of evaluated data.
+
+```sql
+SELECT VALUE COUNT(1) 
+FROM c 
+WHERE c.categoryId = "AI_Docs"
+```
+
+## Array Querying
+
+NoSQL documents frequently model one-to-many relationships as embedded arrays. The `ARRAY_CONTAINS` system function evaluates array membership. For complex intra-array filtering, the `JOIN` operator computes a cartesian product between the parent document and its array elements, effectively flattening the structure for standard evaluation.
+
+```sql
+SELECT c.title, tag 
+FROM c 
+JOIN tag IN c.tags 
+WHERE tag IN ("python", "azure")
+```
+
+## Cost Monitoring and Diagnostics
+
+Resource consumption in Cosmos DB is measured in Request Units (RUs). The RU charge for every query execution is deterministically calculated based on CPU, memory, and IO utilization. The gateway returns this exact numerical cost in the `x-ms-request-charge` HTTP response header for telemetry and cost optimization.
+
+```python
+# Intercepting RU charges from SDK response headers
+headers = container.client_connection.last_response_headers or {} 
+page_rus = float(headers.get('x-ms-request-charge', 0)) 
+```
+
 ---
 
 ## Query Execution Architecture
@@ -43,7 +86,7 @@ To optimize query performance, you must understand how Cosmos DB routes requests
 
 ### 1. Single-Partition Query Routing
 
-**Technical Scenario:** An e-commerce application querying for a specific user's orders, where `userId` is the configured partition key for the container.
+**Technical Scenario:** An application querying for a specific category's documents, where `categoryId` is the configured partition key for the container.
 
 <Mermaid chart={`
 graph TD
@@ -56,7 +99,7 @@ graph TD
         P3[(Partition C\nRange: 0x80 - 0xFF)]
     end
 
-    Client -- "1. Query + PartitionKey='user_123'" --> Gateway
+    Client -- "1. Query + PartitionKey='AI_Docs'" --> Gateway
     Gateway -- "2. Routing Table Evaluation" --> P2
     P2 -- "3. Local Execution" --> Gateway
     Gateway -- "4. Return Results" --> Client
@@ -69,14 +112,14 @@ graph TD
 `} />
 
 **Execution Flow:**
-1. The Python SDK sends the query and explicitly includes the partition key value (`user_123`) in the request metadata.
+1. The Python SDK sends the query and explicitly includes the partition key value in the request metadata.
 2. The Cosmos DB Gateway evaluates the partition key against its internal routing table to compute the exact physical partition containing the target data.
 3. The query is routed directly to that single physical node, which executes the query locally against its data engine.
 4. The results are returned to the client. This is the most efficient execution path, consuming the minimum necessary CPU, IO, and Request Units (RUs).
 
 ### 2. Cross-Partition (Fan-Out) Query Routing
 
-**Technical Scenario:** An application querying for all orders placed in the last 24 hours across the entire system, without filtering by the `userId` partition key.
+**Technical Scenario:** An application querying for all documents published in the last 24 hours across the entire system, without filtering by the `categoryId` partition key.
 
 <Mermaid chart={`
 graph TD
@@ -118,7 +161,7 @@ graph TD
 
 ### 3. Pagination and State Management
 
-**Technical Scenario:** A REST API endpoint returning a large dataset of products to a frontend application, requiring chunked responses to prevent memory exhaustion and timeout errors.
+**Technical Scenario:** A REST API endpoint returning a large dataset of documents to a frontend application, requiring chunked responses to prevent memory exhaustion and timeout errors.
 
 <Mermaid chart={`
 sequenceDiagram

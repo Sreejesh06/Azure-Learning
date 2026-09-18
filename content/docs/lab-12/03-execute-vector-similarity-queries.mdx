@@ -1,0 +1,122 @@
+---
+title: 03 - Execute vector similarity queries for semantic search
+description: Execute vector similarity queries for semantic search.
+---
+
+# Execute vector similarity queries for semantic search
+
+Once your container stores documents with embeddings, you can execute vector similarity queries to find semantically related content. 
+
+This guide breaks down exactly **what** you need to do and **why** it works.
+
+## 1. The Core Tool: The `VectorDistance` Function
+
+**What it is:** `VectorDistance` is a built-in SQL function in Cosmos DB that calculates how similar two vectors (lists of numbers representing meaning) are to each other. 
+**Why it matters:** Instead of matching exact keywords (like "WiFi"), it matches meaning (so a search for "WiFi issues" can match "wireless network troubleshooting"). 
+
+It takes a few parameters:
+- `vector_expr_1`: The vector stored in your document (e.g., `c.embedding`).
+- `vector_expr_2`: The query vector you are searching for (passed as a parameter).
+- `bool_expr` (Optional): If set to `true`, it forces a slow, exact match (brute-force). Default is `false` (fast, approximate match).
+
+## 2. How to Structure the SQL Query
+
+**What we do:** We write a SQL query that uses `VectorDistance` to score and rank documents.
+**Why:** We want the most relevant (highest scoring) documents at the top, and we want to limit how many we get back.
+
+```sql
+SELECT TOP 10 
+    c.id, 
+    c.title, 
+    VectorDistance(c.embedding, @queryVector) AS SimilarityScore 
+FROM c 
+ORDER BY VectorDistance(c.embedding, @queryVector)
+```
+
+* **`VectorDistance` in SELECT:** Returns the actual score so your app can see how good the match is.
+* **`ORDER BY VectorDistance`:** Sorts the results so the most similar documents come first.
+* **`TOP N` (Crucial!):** You **must** include a limit (like `TOP 10`). Without it, Cosmos DB will try to score every single document in your database, which will be incredibly slow and cost a massive amount of Request Units (RUs).
+
+## 3. Generating the Query Vector First
+
+**What we do:** Before running the SQL query, you must take the user's text (e.g., "How do I fix WiFi?") and turn it into a vector using an AI model (like OpenAI).
+**Why:** Cosmos DB only compares numbers, not text. 
+
+<Callout type="warn" title="Important Rule">
+You **must** use the *exact same AI model* (e.g., `text-embedding-ada-002`) to generate the query vector that you used to generate the document vectors in the database. If you mix models, the math won't work, and your results will be garbage.
+</Callout>
+
+```python
+from openai import AzureOpenAI
+
+# User's search query
+query_text = "How do I fix WiFi connection problems?"
+
+# Generate query embedding using the SAME model as documents
+openai_client = AzureOpenAI(
+    api_key=api_key,
+    api_version="2024-02-01",
+    azure_endpoint=endpoint
+)
+
+response = openai_client.embeddings.create(
+    input=query_text,
+    model="text-embedding-ada-002"
+)
+
+query_embedding = response.data[0].embedding
+```
+
+## 4. Parameterized Queries (Don't Hardcode Vectors!)
+
+**What we do:** We pass the query vector as a parameter (`@queryVector`) rather than pasting the numbers directly into the SQL string.
+**Why:** A vector is usually a massive array of 1,536 numbers. Pasting that into a SQL string makes it unreadable and impossible to debug. More importantly, using parameters allows Cosmos DB to "cache" the query plan, making repeated queries run much faster.
+
+```python
+parameters = [
+    {"name": "@queryVector", "value": query_embedding}
+]
+
+results = container.query_items(
+    query=query,
+    parameters=parameters,
+    enable_cross_partition_query=True
+)
+```
+
+## 5. Making Sense of Similarity Scores
+
+**What it is:** The `VectorDistance` function gives you a number representing similarity. Assuming you are using **Cosine Similarity**, here is the cheat sheet:
+
+- **1.0:** Exact match (Identical meaning).
+- **0.7 to 0.9:** Highly similar.
+- **0.5 to 0.7:** Moderately similar.
+- **Below 0.5:** Low similarity / off-topic.
+
+**How to use it:** You can add a `WHERE` clause to filter out bad results. For example:
+`WHERE VectorDistance(c.embedding, @queryVector) > 0.7` ensures you only get highly relevant answers.
+
+## 6. How Many Results Should You Ask For (`TOP N`)?
+
+**What to do:** Adjust your `TOP N` based on what you are building.
+**Why:** Asking for fewer results saves money (RUs) and speeds up the query.
+
+- **RAG (AI Chatbots):** `TOP 5` to `10`. Giving an LLM too much context confuses it and wastes tokens.
+- **Search Engine UI:** `TOP 10` to `20`. Standard pagination for humans browsing results.
+- **Recommendations ("Related Items"):** `TOP 3` to `5`. Just enough to show next to an article.
+
+## 7. Indexed Search vs. Brute-Force Search
+
+**What it is:** Cosmos DB uses indexes (like DiskANN) to do "Approximate Nearest Neighbor" search by default.
+**Why:** Comparing a query vector against *every single document* (Brute-Force) is 100% accurate but incredibly slow and expensive. Indexes trade a tiny fraction of accuracy for massive speed improvements.
+
+* **When to use Indexed (Default):** 99% of the time in production.
+* **When to use Brute-Force:** Only for testing/evaluating accuracy on small datasets. You trigger it by passing `true` as the third parameter: `VectorDistance(c.embedding, @queryVector, true)`.
+
+## 8. Pro-Tips for Optimizing Performance
+
+To keep your app fast and cheap:
+
+1. **Never use `SELECT *`:** Only ask for the fields you actually need (like `c.id` and `c.title`). Vector data is heavy; don't pull it across the network if you don't need it.
+2. **Include Partition Keys:** If you know the partition key (e.g., searching within a specific `tenantId` or `category`), include it in the `WHERE` clause. This prevents Cosmos DB from having to search across every server.
+3. **Monitor RUs:** Keep an eye on the cost of your queries. High RU costs usually mean you forgot a `TOP N` clause or are missing a vector index.
