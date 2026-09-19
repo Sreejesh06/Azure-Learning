@@ -1,0 +1,51 @@
+---
+title: 05 - Exercise - Build a RAG document store
+description: Build a RAG document store on Azure Cosmos DB for NoSQL
+---
+
+## Visual Flow
+
+<Mermaid chart={`
+architecture-beta
+    group azure(cloud)[Azure Cloud - Central India]
+    service cosmos(database)[Cosmos DB NoSQL] in azure
+    service py(server)[Python Flask App (Local)] in azure
+    py:R -- L:cosmos
+`} />
+
+This architecture diagram demonstrates our local Python application authenticating with Azure Entra ID to perform NoSQL operations (insert, point-read, cross-partition queries) against our Cosmos DB instance deployed in the Central India region.
+
+## Overview
+
+In this exercise, we create an Azure Cosmos DB for NoSQL database that serves as a document store for Retrieval-Augmented Generation (RAG) applications. We'll store chunked documents with metadata and build Python functions to retrieve this context for a language model.
+
+## Step 1: Provision Azure Resources
+
+We use the Azure CLI to provision our Cosmos DB instance. 
+
+**Why:** It's important to understand how to provision the database programmatically. 
+
+> [!NOTE]
+> Check out the `commands_cheatsheet.sh` in the `labs/lab-11-cosmos-db-rag` folder for the exact CLI commands we use to deploy the database and configure Role-Based Access Control (RBAC).
+
+## Step 2: Implement the RAG Functions
+
+We implement four key Python functions in `rag_functions.py` to handle the document chunks:
+1. `store_document_chunk`: Uses `upsert_item` for idempotent insertion/updates.
+2. `get_chunks_by_document`: A fast, single-partition query using `documentId` as the partition key.
+3. `search_chunks_by_metadata`: A cross-partition query to filter context by tags and categories.
+4. `get_chunk_by_id`: An incredibly efficient point-read (1 RU) to grab a specific chunk directly.
+
+## Step 3: Local Testing with Flask
+
+We run the provided Flask application locally to insert sample RAG documents, run automated tests against our functions, and execute raw SQL queries to see the JSON chunks in action.
+
+## Troubleshooting
+
+- **Symptom:** `The subscription is not registered to use namespace 'Microsoft.DocumentDB'`
+  **Why it happened:** Azure needs explicit permission to activate the DocumentDB provider on your subscription before you can deploy a Cosmos DB account.
+  **The Fix:** Run `az provider register --namespace Microsoft.DocumentDB`
+
+- **Symptom:** Authentication or access denied errors when running the Flask app.
+  **Why it happened:** You need to explicitly assign your user the "Cosmos DB Built-in Data Contributor" role to read/write data in the container.
+  **The Fix:** Run the Role Assignment CLI command provided in the cheatsheet.
