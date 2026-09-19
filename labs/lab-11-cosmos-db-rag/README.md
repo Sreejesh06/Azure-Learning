@@ -6,43 +6,196 @@
 architecture-beta
     group azure(cloud)[Azure Cloud - Central India]
     service cosmos(database)[Cosmos DB NoSQL] in azure
-    service py(server)[Python Flask App (Local)] in azure
-    py:R -- L:cosmos
+    service app(server)[Python AI App] in azure
+    service user(client)[End User]
+    
+    user:R -- L:app
+    app:R -- L:cosmos
 `} />
 
-This architecture diagram demonstrates our local Python application authenticating with Azure Entra ID to perform NoSQL operations (insert, point-read, cross-partition queries) against our Cosmos DB instance deployed in the Central India region.
+**How this flows:** The End User asks a question. The Python AI App takes the question and queries the Cosmos DB NoSQL database for relevant context (document chunks). The database returns the context, which the AI App feeds to the LLM to generate an accurate, grounded answer.
 
-## Overview
+## Top-to-Bottom Concept: The Customer Support Bot Example
+Imagine you are building a Customer Support AI bot for a massive electronics store. 
+1. **The Problem:** LLMs don't know your specific return policies or TV manuals. If a user asks "How do I mount TV Model X?", the LLM hallucinates.
+2. **The Ingestion (Chunking):** You take the 100-page manual for TV Model X and break it into 2-paragraph chunks. You attach metadata (`category: "manual"`, `tags: ["tv", "mounting"]`). 
+3. **The Database (Cosmos DB):** You store all these chunks in a Cosmos DB NoSQL container.
+4. **The Retrieval:** When the user asks the bot the question, the bot performs a **Cross-Partition Query** to search for chunks where `tag == "tv"` and `tag == "mounting"`. Cosmos DB returns the specific paragraphs.
+5. **The Generation (RAG):** The bot passes the user's question *and* the retrieved paragraphs to the LLM, saying: "Answer the user based ONLY on this manual."
 
-In this exercise, we create an Azure Cosmos DB for NoSQL database that serves as a document store for Retrieval-Augmented Generation (RAG) applications. We'll store chunked documents with metadata and build Python functions to retrieve this context for a language model.
+## Azure CLI Command Breakdown & Structure
 
-## Step 1: Provision Azure Resources
+When building this infrastructure, understanding the CLI commands is critical for exams and real-world ops.
 
-We use the Azure CLI to provision our Cosmos DB instance. 
+- `az provider register --namespace Microsoft.DocumentDB`
+  **Why:** Activates the Cosmos DB APIs on your subscription.
+- `az cosmosdb create --locations regionName=centralindia failoverPriority=0 isZoneRedundant=False`
+  **Why:** Unlike simple resources, Cosmos DB is globally distributed. You must specify locations with failover priorities. Priority `0` is the primary read/write region.
+- `az cosmosdb sql container create --partition-key-path "/documentId"`
+  **Why:** The container holds the data. The **partition key** is the most important decision in Cosmos DB. We use `/documentId` so all small chunks belonging to the same large manual are stored on the same physical server.
+- `az cosmosdb sql role assignment create`
+  **Why:** Cosmos DB uses strict Role-Based Access Control (RBAC). Even as the creator, you cannot read/write data until you explicitly assign yourself the `Cosmos DB Built-in Data Contributor` role on the data plane.
 
-**Why:** It's important to understand how to provision the database programmatically. 
+## Exam Study Points (AI-102 & DP-420)
 
-> [!NOTE]
-> Check out the `commands_cheatsheet.sh` in the `labs/lab-11-cosmos-db-rag` folder for the exact CLI commands we use to deploy the database and configure Role-Based Access Control (RBAC).
+If you are preparing for Azure AI or Cosmos DB certifications, drill these concepts into your head:
 
-## Step 2: Implement the RAG Functions
+1. **Partitioning Strategy:**
+   - **Single-Partition Queries:** Providing the partition key (`documentId`) in your query allows Cosmos DB to instantly locate the exact physical server. Highly efficient.
+   - **Cross-Partition Queries:** Searching by metadata (e.g. `WHERE c.metadata.category = 'manual'`) forces Cosmos DB to fan out and search every physical server. This consumes massive amounts of Request Units (RUs) and is slower.
+2. **Point Reads vs SQL Queries:**
+   - A **Point Read** (`container.read_item(id, partition_key)`) costs exactly 1 RU for a 1KB document. It is the cheapest, fastest operation in Cosmos DB because it bypasses the query engine entirely. Always use Point Reads when you have both the ID and Partition Key.
+3. **Idempotency with Upsert:**
+   - Using `upsert_item` instead of `insert_item` handles both creates and updates without throwing conflict errors. It's safe to run repeatedly.
+4. **Request Units (RUs):**
+   - RUs are the currency of Cosmos DB. They represent CPU, IOPS, and memory. Tracking the `x-ms-request-charge` header is required to optimize RAG application costs.
 
-We implement four key Python functions in `rag_functions.py` to handle the document chunks:
-1. `store_document_chunk`: Uses `upsert_item` for idempotent insertion/updates.
-2. `get_chunks_by_document`: A fast, single-partition query using `documentId` as the partition key.
-3. `search_chunks_by_metadata`: A cross-partition query to filter context by tags and categories.
-4. `get_chunk_by_id`: An incredibly efficient point-read (1 RU) to grab a specific chunk directly.
+## Lab Step-by-Step Execution
 
-## Step 3: Local Testing with Flask
+Here is the exact procedure to build and test this RAG document store from scratch.
 
-We run the provided Flask application locally to insert sample RAG documents, run automated tests against our functions, and execute raw SQL queries to see the JSON chunks in action.
+### Step 1: Provision the Azure Cosmos DB Infrastructure
 
-## Troubleshooting
+We use the Azure CLI to deploy our Cosmos DB resources.
 
-- **Symptom:** `The subscription is not registered to use namespace 'Microsoft.DocumentDB'`
-  **Why it happened:** Azure needs explicit permission to activate the DocumentDB provider on your subscription before you can deploy a Cosmos DB account.
-  **The Fix:** Run `az provider register --namespace Microsoft.DocumentDB`
+1. **Log in to Azure and register the provider:**
+   ```bash
+   az login
+   az provider register --namespace Microsoft.DocumentDB
+   ```
+   **Why:** You must explicitly allow your subscription to use the DocumentDB APIs.
 
-- **Symptom:** Authentication or access denied errors when running the Flask app.
-  **Why it happened:** You need to explicitly assign your user the "Cosmos DB Built-in Data Contributor" role to read/write data in the container.
-  **The Fix:** Run the Role Assignment CLI command provided in the cheatsheet.
+2. **Set your variables and create the Resource Group:**
+   ```bash
+   RESOURCE_GROUP="rg-cosmos-rag-lab"
+   LOCATION="centralindia"
+   COSMOS_ACCOUNT_NAME="cosmos-rag-$(openssl rand -hex 4)"
+   DATABASE_NAME="rag_db"
+   CONTAINER_NAME="document_chunks"
+
+   az group create --name $RESOURCE_GROUP --location $LOCATION
+   ```
+
+3. **Deploy the Cosmos DB Account, Database, and Container:**
+   ```bash
+   # 1. Create Account (Takes 5-10 minutes)
+   az cosmosdb create \
+       --name $COSMOS_ACCOUNT_NAME \
+       --resource-group $RESOURCE_GROUP \
+       --locations regionName=$LOCATION failoverPriority=0 isZoneRedundant=False \
+       --default-consistency-level Session
+
+   # 2. Create Database
+   az cosmosdb sql database create \
+       --account-name $COSMOS_ACCOUNT_NAME \
+       --resource-group $RESOURCE_GROUP \
+       --name $DATABASE_NAME
+
+   # 3. Create Container partitioned by /documentId
+   az cosmosdb sql container create \
+       --account-name $COSMOS_ACCOUNT_NAME \
+       --resource-group $RESOURCE_GROUP \
+       --database-name $DATABASE_NAME \
+       --name $CONTAINER_NAME \
+       --partition-key-path "/documentId" \
+       --throughput 400
+   ```
+
+   **Visualizing the Cosmos DB Hierarchy & Partitioning:**
+   ```mermaid
+   graph TD
+       A[Cosmos DB Account] --> B[Database: rag_db]
+       B --> C[Container: document_chunks]
+       
+       C -->|Partition Key: /documentId| D(Logical Partition<br/>documentId: 'doc-001')
+       C -->|Partition Key: /documentId| E(Logical Partition<br/>documentId: 'doc-002')
+       
+       D --> F[Chunk 1]
+       D --> G[Chunk 2]
+       
+       E --> H[Chunk 1]
+       E --> I[Chunk 2]
+       E --> J[Chunk 3]
+       
+       style D stroke-dasharray: 5 5
+       style E stroke-dasharray: 5 5
+   ```
+
+4. **Grant Data-Plane Access (RBAC):**
+   ```bash
+   USER_ID=$(az ad signed-in-user show --query id --output tsv)
+   az cosmosdb sql role assignment create \
+       --account-name $COSMOS_ACCOUNT_NAME \
+       --resource-group $RESOURCE_GROUP \
+       --scope "/" \
+       --principal-id $USER_ID \
+       --role-definition-id 00000000-0000-0000-0000-000000000002
+   ```
+   **Why:** Cosmos DB blocks read/write access by default. You must assign the `Cosmos DB Built-in Data Contributor` role to yourself.
+
+### Step 2: Implement the Python SDK Functions
+
+In your Python application (`rag_functions.py`), implement these four core methods using the `azure-cosmos` SDK.
+
+1. **Upsert a Document Chunk (Idempotent Insert):**
+   ```python
+   chunk = {
+       "id": chunk_id,
+       "documentId": document_id,
+       "content": content,
+       "metadata": metadata or {}
+   }
+   container.upsert_item(body=chunk)
+   ```
+
+2. **Get Chunks by Document (Single-Partition Query):**
+   ```python
+   query = "SELECT * FROM c WHERE c.documentId = @documentId ORDER BY c.chunkIndex"
+   items = container.query_items(
+       query=query,
+       parameters=[{"name": "@documentId", "value": document_id}],
+       partition_key=document_id  # Highly efficient!
+   )
+   ```
+
+3. **Search by Metadata (Cross-Partition Query):**
+   ```python
+   # Example: Searching for a specific tag inside the metadata array
+   query = "SELECT * FROM c WHERE ARRAY_CONTAINS(c.metadata.tags, @tag)"
+   items = container.query_items(
+       query=query,
+       parameters=[{"name": "@tag", "value": "azure"}],
+       enable_cross_partition_query=True  # Required because we don't know the documentId
+   )
+   ```
+
+4. **Point Read (Fastest Operation):**
+   ```python
+   item = container.read_item(
+       item=chunk_id,             # The unique ID
+       partition_key=document_id  # The physical server location
+   )
+   ```
+
+### Step 3: Local Testing via Flask
+
+1. **Export your Cosmos DB Endpoint:**
+   Retrieve your endpoint URL:
+   ```bash
+   az cosmosdb show --name $COSMOS_ACCOUNT_NAME --resource-group $RESOURCE_GROUP --query documentEndpoint --output tsv
+   ```
+   Export it to your terminal:
+   ```bash
+   export COSMOS_ENDPOINT="<YOUR_URL>"
+   export COSMOS_DATABASE="rag_db"
+   export COSMOS_CONTAINER="document_chunks"
+   ```
+
+2. **Run the App:**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   python3 app.py
+   ```
+   Open `http://127.0.0.1:5000` to test ingestion and retrieval visually!
