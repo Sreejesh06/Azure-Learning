@@ -1,0 +1,138 @@
+---
+title: 02 - Understand indexes in Azure Cosmos DB
+description: Learn how Cosmos DB indexes data under the hood and how to use metrics to identify missing indexes.
+---
+
+# Understand indexes in Azure Cosmos DB
+
+Azure Cosmos DB uses indexes to execute queries efficiently without scanning entire containers. By default, it automatically indexes all properties in every item. While this is great for rapid development, it can inflate storage and RU (Request Unit) costs for AI workloads.
+
+## Automatic Indexing Trade-offs
+
+When you create a new container, the default policy indexes every property using **range indexes**. 
+
+* **The Good:** Queries on any property can use indexes immediately without upfront configuration.
+* **The Bad (for AI):** Each indexed property consumes storage space and adds overhead to writes. If you store large embedding arrays (like 1536-dimensional vectors from OpenAI) or large text content that you never filter on directly, the default policy wastes massive amounts of space and RUs.
+
+## Explore Index Types
+
+| Index Type | What you ask the Database | Real-World Application Tool |
+| :--- | :--- | :--- |
+| **Range** | "Give me houses where price < 400000." | Price filters, basic search bars, and functions like `CONTAINS`, `STARTSWITH`, `ENDSWITH`, `StringEquals`, and `IS_DEFINED`. |
+| **Composite** | "Give me houses sorted by city AND THEN by price." | Advanced sorting dropdowns, or combining an equality filter (`=`) with a range filter (`>`) on *different* properties. |
+| **Spatial** | "Give me houses near these coordinates." | "Search near me" / Map views using `ST_DISTANCE`, `ST_WITHIN`, or `ST_INTERSECTS`. |
+| **Vector** | "Give me houses that feel like this description." | AI Chatbots & Semantic Search (types: flat, quantizedFlat, diskANN). |
+
+## Indexing Modes
+
+* **Consistent**: The index is updated synchronously during each write. Queries always reflect the latest data. (Best for AI and most workloads).
+* **None**: Indexing is disabled. The container acts as a pure key-value store (point reads only). Disabling indexing can significantly improve write performance for **bulk operations**.
+
+*(Note: "Lazy" indexing is deprecated).*
+
+## Managing Storage Costs and Indexing Policies
+
+Index size is driven by:
+* **Number of indexed properties**: More properties = more storage.
+* **Property value cardinality**: Properties with many distinct values (like UUIDs) require much larger index structures than properties with few distinct values (like booleans).
+* **Array elements**: Each element is indexed separately. Large arrays (like AI embeddings) significantly increase index storage.
+
+### Why path symbols (/? and /[]) are required
+
+You might wonder: *Why write `/city/?` when you could just write `/city`?*
+
+The reason Cosmos DB forces us to use these symbols (`/?` and `/[]`) is to prevent the database from getting confused when a document's structure changes. Cosmos DB data is "schema-agnostic." A property named `city` could be a simple text string today, a nested object tomorrow, or an array next week. The symbols tell the database exactly what shape to expect.
+
+#### 1. Why /city isn't enough (The `/?` rule)
+
+If you just told the database `/city`, it wouldn't know how to handle the data if the structure changed.
+
+**Today:** `{ "city": "New York" }`  
+**Next Month:** `{ "city": { "name": "New York", "state": "NY" } }`
+
+* If you use `/city/?`, you are explicitly telling the database: *"Only index this if it is a single value (like the string "New York"). If it suddenly becomes a complex object with sub-properties like state, ignore it."* The `/?` acts as a safety guard that says: "Stop here, this is a dead-end value."
+* If you want to index the whole object and its sub-properties, you would have to use `/*` (`/city/*`).
+
+#### 2. The Array Problem (The `/[]` rule)
+
+Computers read arrays differently than normal text.
+
+```json
+{
+  "favoriteCity": "New York",
+  "visitedCities": ["London", "Paris", "Tokyo"]
+}
+```
+
+* `/favoriteCity/?` tells the database: "Go to `favoriteCity`, grab the single value, and index it."
+* `/visitedCities/[]` tells the database: "Go to `visitedCities`, open the brackets, loop through the list, and index every individual item inside it one by one."
+
+Without the `[]` symbol, the database wouldn't know it needs to unpack a list.
+
+### Visualizing Path Symbols
+
+<Mermaid chart={`
+flowchart TD
+    Root["Document Root"]
+    
+    Root -->|"Path: /*"| All["Index Everything"]
+    
+    Root -->|"Path: /city/?"| City["Single Value"]
+    City --> CityVal["New York (Indexed!)"]
+    City -.-> CityObj["{name: New York}"]
+    CityObj -.-> Ignored["IGNORED: Not a single value"]
+    
+    Root -->|"Path: /visitedCities/[]"| Arr["Array Unpacking"]
+    Arr --> L["London"]
+    Arr --> P["Paris"]
+    Arr --> T["Tokyo"]
+    
+    style All fill:#f9d0c4,stroke:#e83e8c
+    style CityVal fill:#d4edda,stroke:#28a745
+    style Ignored fill:#f8d7da,stroke:#dc3545,stroke-dasharray: 5 5
+    style L fill:#d1ecf1,stroke:#17a2b8
+    style P fill:#d1ecf1,stroke:#17a2b8
+    style T fill:#d1ecf1,stroke:#17a2b8
+`} />
+
+### Summary Cheat Sheet
+
+* `/?` = "Grab this single piece of data and stop."
+* `/[]` = "Open this list and index every item inside it."
+* `/*` = "Go down this path and index absolutely everything you find, no matter how deep it goes."
+* `/nested/path/*` = "Go to a specific nested object and index everything inside it."
+
+### Custom Indexing Policies (Include/Exclude Paths)
+
+**Default "Index Everything" Policy:**
+```json
+{
+  "indexingMode": "consistent",
+  "automatic": true,
+  "includedPaths": [ { "path": "/*" } ],
+  "excludedPaths": [ { "path": "/\"_etag\"/?" } ]
+}
+```
+
+**Optimized Selective Policy:**
+```json
+{
+  "indexingMode": "consistent",
+  "automatic": true,
+  "includedPaths": [
+    { "path": "/title/?" },
+    { "path": "/category/?" },
+    { "path": "/createdDate/?" },
+    { "path": "/metadata/*" }
+  ],
+  "excludedPaths": [
+    { "path": "/*" } 
+  ]
+}
+```
+*Notice how the conflict precedence works: the more specific path takes precedence over the wildcard. This prevents huge embedding arrays from being range-indexed!*
+
+**System Properties:**
+* `id` and `_ts` (timestamp) are always indexed automatically. You can always filter/sort by them.
+* `_etag` is excluded by default.
+* The Partition Key must be explicitly included in your indexing policy (unless it is `/id`) to avoid full container scans.

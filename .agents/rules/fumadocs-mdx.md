@@ -16,3 +16,21 @@ description: Your page description
 
 # Your Content Here
 ```
+
+## Fumadocs Callout Component (Alerts)
+Fumadocs does not natively support GitHub-flavored markdown alerts (like `> [!WARNING]` or `> [!TIP]`). They will render as raw text blockquotes.
+You **MUST** use the `<Callout>` component from `fumadocs-ui` instead.
+
+### Correct Usage
+```mdx
+import { Callout } from 'fumadocs-ui/components/callout';
+
+<Callout type="warn" title="Important Warning">
+This is a warning block.
+</Callout>
+
+<Callout type="info" title="Helpful Tip">
+This is an info/tip block.
+</Callout>
+```
+*Supported types: `info`, `warn`, `error`.*

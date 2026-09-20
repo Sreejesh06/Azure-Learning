@@ -1,0 +1,149 @@
+---
+title: 06 - Choose consistency levels for optimal performance
+description: Learn how Azure Cosmos DB consistency levels control trade-offs between data freshness, latency, throughput, and availability.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# Choose consistency levels for optimal performance
+
+Consistency levels in Azure Cosmos DB are the ultimate balancing act between **Data Freshness** (getting the absolute newest data) and **Performance** (speed and RU cost). AI applications have diverse requirements—sometimes you need instant freshness, other times you prioritize massive throughput and low cost.
+
+## 1. The 5 Consistency Levels (Strongest to Weakest)
+
+Every time you read data, Cosmos DB looks at your Consistency Level to decide how hard it should work to get the latest data.
+
+<Mermaid chart={`
+flowchart LR
+    subgraph HighCost["Highest RU Cost / Highest Latency"]
+        direction TB
+        Strong["Strong"]
+        Bounded["Bounded Staleness"]
+    end
+    
+    subgraph Middle["The AI Sweet Spot"]
+        Session["Session (Default)"]
+    end
+    
+    subgraph LowCost["Lowest RU Cost / Lowest Latency"]
+        direction TB
+        Prefix["Consistent Prefix"]
+        Eventual["Eventual"]
+    end
+    
+    Strong -.-> Bounded -.-> Session -.-> Prefix -.-> Eventual
+`} />
+
+1. **Strong Consistency**
+   * **Guarantee:** You always get the absolute latest data.
+   * **The Catch:** Requires "global majority consensus" before confirming a write, causing high write latency. **Not supported** with multiple write regions. Costs **2x the RUs** to read (because it reads from two replicas).
+   * **When to use:** Financial apps, strict regulatory compliance.
+2. **Bounded Staleness**
+   * **Guarantee:** Reads will lag behind writes by a specific limit (e.g., max 5 minutes old, or max 100 updates old). 
+   * **The Catch:** Costs **2x the RUs** to read. Not recommended for multi-region write accounts.
+3. **Session (The Default & Most Popular)**
+   * **Guarantee:** "Read-your-own-writes". If *you* upload a document, *you* are guaranteed to see it instantly. Other users might not see it for a few seconds.
+   * **The Catch:** You must maintain a "Session Token". Costs only **1x RU** to read.
+4. **Consistent Prefix**
+   * **Guarantee:** You might see old data, but you will *never* see data out of order. (e.g., You will never see update C before update B).
+   * **When to use:** Audit logs, event streams. Costs **1x RU**.
+5. **Eventual**
+   * **Guarantee:** None. You get data fast, but it might be old and out of order.
+   * **When to use:** Analytics, background reports. Fastest, cheapest (**1x RU**), and highest availability.
+
+---
+
+## 2. Why Session Consistency is King for AI
+
+**Context:** A user uploads a PDF and immediately searches for a concept inside it.
+**Concept:** If you use Eventual consistency, the search might return nothing because the database hasn't replicated the PDF yet. If you use Session consistency, the user is guaranteed to find their own PDF instantly.
+
+To make this work, the server captures a `session_token` when the document is written, and passes that exact token back to the database when querying.
+
+<Mermaid chart={`
+sequenceDiagram
+    participant App as "AI Application"
+    participant DB as "Cosmos DB"
+    
+    App->>DB: "Write Document (Upload PDF)"
+    DB-->>App: "Success + [x-ms-session-token: 12345]"
+    
+    Note over App: "Application saves token"
+    
+    App->>DB: "Search Request using [token: 12345]"
+    DB-->>App: "Guaranteed to return the uploaded PDF"
+`} />
+
+**Example Code (Python SDK):**
+```python
+# Write the document and steal the session token from the response headers
+session_info = {} 
+
+def capture_session_token(headers, result): 
+    session_info["token"] = headers.get("x-ms-session-token", "") 
+
+container.create_item( 
+    body={ "id": "123", "category": "proposals" }, 
+    response_hook=capture_session_token # <-- Captures the token
+) 
+
+# Pass the token into the search query so the user "reads their own writes"
+results = container.query_items( 
+    query="SELECT * FROM c WHERE c.category = @category", 
+    parameters=[{"name": "@category", "value": "proposals"}],
+    session_token=session_info.get("token") # <-- Guarantees freshness for this user
+)
+```
+*(Note: If your backend is a simple single instance, the Python SDK handles this token automatically. You only need to explicitly code it if you have a distributed microservice backend).*
+
+---
+
+## 3. The RU Cost Rule (Crucial for Exams & Billing)
+
+<Callout type="warn" title="RU Billing Rules">
+- **Read Costs:** Strong and Bounded Staleness cost **double the RUs (2x)** because they must read from 2 replicas (a minority quorum). Session, Prefix, and Eventual only read from 1 replica (**1x RU**).
+- **Write Costs:** Write RUs do **not** change based on consistency level. Every consistency level always writes to a local majority (3 out of 4 replicas). Only the *latency* (time waiting for global consensus) changes.
+</Callout>
+
+---
+
+## 4. Overriding Consistency Per Request
+
+You are not locked into one consistency level for your entire application. You can instantiate two different database clients to handle different workloads.
+
+**Example Code:**
+```python
+from azure.cosmos import CosmosClient, ConsistencyLevel 
+
+# Client 1: Critical operations that must have the absolute newest data (Expensive/Slow)
+strong_client = CosmosClient(
+    url, credential, 
+    consistency_level=ConsistencyLevel.Strong
+) 
+
+# Client 2: Background analytics where slightly old data is perfectly fine (Cheap/Fast)
+eventual_client = CosmosClient(
+    url, credential, 
+    consistency_level=ConsistencyLevel.Eventual
+) 
+```
+
+---
+
+## 5. Multi-Region AI Deployments
+
+If you have a globally distributed AI app (e.g., servers in the US and Europe):
+* **Strong Consistency:** Your US writes must wait until Europe confirms receipt. This causes massive latency based on the distance to the farthest region.
+* **Session Consistency (Recommended):** US writes confirm instantly (local majority). The US user sees their write instantly. The European users will see it a few seconds later. For global AI apps, this provides the best balance of speed and user experience.
+
+---
+
+## 6. Validating Eventual Consistency (The PBS Metric)
+
+**Context:** You want to use Eventual consistency to save money, but you're worried the data is *too* stale.
+**Concept:** You can check the **PBS (Probabilistically Bounded Staleness)** metric to see exactly how stale your data actually is in the real world.
+
+<Callout type="info" title="Checking PBS Metrics">
+Navigate to the **Azure Portal -> Metrics -> Consistency** and view the PBS metric. 
+If PBS says your Eventual reads are returning completely fresh data 99% of the time, you can safely use Eventual consistency for more operations. If the delays are massive, stick to Session consistency.
+</Callout>

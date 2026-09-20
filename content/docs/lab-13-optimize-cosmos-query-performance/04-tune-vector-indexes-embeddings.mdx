@@ -1,0 +1,144 @@
+---
+title: 04 - Tune vector indexes for embedding workloads
+description: Learn how to configure and tune vector indexes for efficient semantic search in Cosmos DB.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# Tune vector indexes for embedding workloads
+
+To understand how to optimize databases for AI, you first need to understand the basic concepts of Generative AI that we are actually storing in the database.
+
+## A Quick GenAI Primer
+* **Embeddings:** Computers only understand numbers. When you give an AI a word (like "Apple"), it translates the *meaning* of that word into a massive list of numbers (e.g., `[0.45, -0.12, 0.89...]`). This list is an embedding.
+* **Dimensions:** This is simply *how many numbers* are in that list. Some models output 300 dimensions, others output 4,096. More dimensions = deeper understanding, but requires more storage.
+* **Vector Search (Similarity Search):** To find out if "Apple" and "Banana" are similar, the database does a mathematical comparison between their two lists of numbers to see how close they are in space. 
+
+<Mermaid chart={`
+flowchart TD
+    Doc["Document (e.g., 'Apple')"]
+    Doc -->|"Translated by AI Model"| Vector["Embedding Array (Massive list of numbers)"]
+    
+    Vector -->|"Sent to Standard Index"| Crash["Database tries to index every number individually (Slow/Expensive)"]
+    Vector -->|"Sent to Vector Index"| Fast["Specialized Math Engine compares lists instantly (Fast)"]
+    
+    style Crash fill:#f8d7da,stroke:#dc3545
+    style Fast fill:#d4edda,stroke:#28a745
+`} />
+
+Before you can add a vector index, you must define a **vector policy** for the container that specifies the path, data type, dimensions, and distance function for each embedding property.
+
+---
+
+## 1. The "Exclude the Embedding" Rule
+
+**Context:** Your document contains a giant array of numbers (the embedding). By default, Cosmos DB tries to range-index every property.
+**Concept:** If you allow the database to range-index an embedding array, it will consume a massive amount of storage and absolutely crush your write performance for zero query benefit. Vector searches use *vector indexes*, not range indexes. You **must explicitly exclude** the embedding path from the standard index.
+
+**Step 1: Database Configuration (JSON Policy)**
+```json
+{ 
+  "excludedPaths": [ 
+    { "path": "/\"_etag\"/?" }, 
+    { "path": "/embedding/*" }  // <-- Crucial: Excludes the embedding array from standard indexing
+  ] 
+}
+```
+*(Note: If your document has multiple embeddings for different models, you must exclude each path individually).*
+
+---
+
+## 2. Choosing the Right Vector Index
+
+Azure Cosmos DB offers three vector index types. Selecting the wrong one will either cost you too much RU (money) or return inaccurate AI results.
+
+### A. Flat Index (Brute-Force)
+* **How it works:** It compares your query vector against *every single vector* in the database (brute-force).
+* **The Good:** 100% guaranteed accuracy. No approximation.
+* **The Bad:** Maximum of **505 dimensions**. Higher latency and RU consumption for large datasets because every vector is evaluated.
+* **When to use:** Small datasets (modest vector count), applications requiring perfect accuracy, or when aggressive metadata filters reduce the search space to a tiny amount of documents before the vector search even starts.
+
+### B. QuantizedFlat Index (Compression)
+* **How it works:** It compresses (quantizes) the vectors to save space, and then performs a brute-force search on the compressed vectors.
+* **The Good:** Supports **4,096 dimensions**. Lower latency and RU cost than Flat indexes.
+* **The Bad:** Slight accuracy reduction due to compression.
+* **When to use:** Medium datasets (1,000 to 50,000 vectors per physical partition).
+
+### C. DiskANN (Large Scale AI)
+* **How it works:** Uses advanced approximate nearest neighbor algorithms developed by Microsoft Research. It builds specialized graphs so it doesn't have to compare against every vector.
+* **The Good:** Supports **4,096 dimensions**. Lowest possible latency and RU cost for massive scale. Maintains high accuracy.
+* **When to use:** Large datasets (50,000+ vectors). **This is the recommended choice for production AI applications.**
+
+<Callout type="warn" title="The 1,000 Vector Minimum Gotcha">
+Both `quantizedFlat` and `diskANN` require a bare minimum of **1,000 vectors** to successfully build their graphs/compressions. If you have fewer than 1,000, Cosmos DB silently ignores the index and falls back to a brute-force scan, resulting in unexpectedly high RU charges. 
+*Strategy:* If starting a new app from scratch, use a `Flat` index initially, and migrate to `diskANN` once your dataset grows past 1,000.
+</Callout>
+
+---
+
+## 3. Tuning the Vector Index (Optional Parameters)
+
+**Context:** You are using `quantizedFlat` or `diskANN` and need to manually balance accuracy vs. performance.
+**Concept:** You can pass optional tuning parameters to the vector index definition to override the system defaults.
+
+**Step 1: Database Configuration (JSON Policy)**
+```json
+{ 
+  "vectorIndexes": [ 
+    { 
+      "path": "/embedding", 
+      "type": "diskANN", 
+      "quantizationByteSize": 64, 
+      "indexingSearchListSize": 150 
+    } 
+  ] 
+}
+```
+**Parameter Definitions:**
+1. `quantizationByteSize` (1 to 512 bytes): Controls compression. A larger value preserves more information (better accuracy) but takes up more storage and reduces throughput.
+2. `indexingSearchListSize` (DiskANN only, 10 to 500): Controls how many vectors are evaluated *during index construction*. Higher values improve query accuracy, but increase the time required to build the index and insert new documents.
+
+---
+
+## 4. Pre-Filtering (Coordinating Indexes)
+
+**Context:** A user asks the AI: *"Find the 10 most similar documents, but only inside the 'Finance' category."*
+**Concept:** A highly optimized AI architecture does not vector-search the entire database and then throw away the non-Finance documents. Instead, you design a policy where the **Range/Composite Index** finds the Finance documents first (Pre-Filtering), and then the **Vector Index** compares embeddings *only* on that tiny subset. This drastically reduces RU consumption.
+
+**Step 1: Database Configuration (Full JSON Policy)**
+```json
+{ 
+  "indexingMode": "consistent", 
+  "includedPaths": [ 
+    { "path": "/category/?" }, 
+    { "path": "/createdDate/?" } 
+  ], 
+  "excludedPaths": [ 
+    { "path": "/*" }, 
+    { "path": "/embedding/*" }  // Excluded from standard indexing
+  ], 
+  "compositeIndexes": [ 
+    [ 
+      { "path": "/category", "order": "ascending" }, 
+      { "path": "/createdDate", "order": "descending" } 
+    ] 
+  ], 
+  "vectorIndexes": [ 
+    { "path": "/embedding", "type": "diskANN" } // The Vector Index
+  ] 
+}
+```
+*This policy fully supports a query that filters by category, sorts by date, and ranks by semantic similarity all at once!*
+
+---
+
+## 5. The Immutability Trap (Plan carefully!)
+
+**Concept:** Vector policies (which define dimensions and data types) **cannot be modified** after the container is created. This immutability requires careful planning:
+* **Dimensions:** Must perfectly match your AI model. If you upgrade to an AI model that outputs more dimensions, you are forced to create a brand new container and migrate all your data.
+* **Data Types:** You can choose `float32`, `float16`, `int8`, or `uint8`. 
+* **Distance Function:** Usually Cosine Similarity for text models.
+
+<Callout type="info" title="Tip">
+Selecting `float16` instead of `float32` reduces your vector storage costs by exactly 50% with minimal accuracy impact for most modern embedding models!
+</Callout>

@@ -1,0 +1,216 @@
+---
+title: 05 - Reduce RU costs with strategic indexing
+description: Learn practical strategies for designing indexing policies that balance query performance with cost efficiency.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# Reduce RU costs with strategic indexing
+
+Request unit (RU) consumption directly impacts the operational cost of your Azure Cosmos DB workloads. The core principle of database optimization revolves around how queries retrieve data.
+
+## The Golden Rule of RU Costs
+
+If a query can use an index, you pay RUs proportional to the **result size**. If an index is missing, the database performs a full scan, and you pay RUs proportional to the **data size**. 
+
+<Mermaid chart={`
+flowchart TD
+    Query["Incoming Query (Find 5 specific documents)"]
+    
+    Query -->|"Index Exists"| Index["Reads Index Map"]
+    Index --> Result["Fetches exactly the 5 matching items"]
+    Result --> Cheap["Low RU Cost (Billed for 5 items)"]
+    
+    Query -->|"Missing Index"| Scan["Full Partition Scan"]
+    Scan --> Check["Examines 10,000 items in storage"]
+    Check --> Expensive["Massive RU Cost (Billed for 10,000 items)"]
+    
+    style Cheap fill:#d4edda,stroke:#28a745
+    style Expensive fill:#f8d7da,stroke:#dc3545
+`} />
+
+Blindly indexing every property causes massive write-latency overhead and skyrocketing storage costs. Strategic indexing reduces query costs while avoiding unnecessary overhead.
+
+---
+
+## 1. Analyze Query Patterns Before Designing
+
+Never build an index based on theoretical possibilities. Review the actual queries your application executes and catalog your patterns:
+
+1. **Filters:** Which properties appear in `WHERE` clauses? (Equality vs Range).
+2. **Sorts:** Which properties appear in `ORDER BY` clauses? (ASC vs DESC).
+3. **Combinations:** Which properties appear together in the same query? (e.g., filter on one, sort by another).
+4. **Access frequency:** How often does each query execute?
+
+<Callout type="info" title="Prioritize by Frequency">
+A query that executes thousands of times per minute justifies more index overhead than an analytics query that runs once per day.
+</Callout>
+
+---
+
+## 2. Use Query Metrics to Find Missing Indexes
+
+When queries perform poorly or cost too much, you can use the Azure SDK to grab hidden "Query Metrics" from the API response headers. 
+
+You are looking for the **Retrieved Document Count** versus the **Output Document Count**. If the database retrieved 10,000 documents just to output 5, your index filter is inefficient or missing.
+
+**Example Code (Python SDK):**
+```python
+from azure.cosmos import CosmosClient
+
+client = CosmosClient(endpoint, credential)
+database = client.get_database_client("documents-db")
+container = database.get_container_client("documents")
+
+query = "SELECT * FROM c WHERE c.documentType = @type ORDER BY c.uploadDate DESC"
+parameters = [{"name": "@type", "value": "pdf"}]
+
+# Use a response_hook to capture hidden metrics from the API headers
+query_metrics_output = {}
+
+def response_hook(headers, results):
+    query_metrics_output["metrics"] = headers.get("x-ms-documentdb-query-metrics", "")
+    query_metrics_output["request_charge"] = headers.get("x-ms-request-charge", "")
+
+results = container.query_items(
+    query=query,
+    parameters=parameters,
+    populate_query_metrics=True,
+    response_hook=response_hook # <-- Grabs the RU cost and utilization metrics
+)
+
+# Process results (this triggers the query execution)
+items = list(results)
+
+# Print the captured metrics
+print(f"Request charge: {query_metrics_output.get('request_charge', '')} RUs")
+```
+
+---
+
+## 3. Stop Indexing Display Data
+
+**Context:** Your document contains a giant 5,000-word `content` string, an AI-generated `summary`, and `rawMetadata` (like file size). 
+**Concept:** If your application only ever uses these fields to *display* them on a screen, but never filters (`WHERE`) or sorts (`ORDER BY`) by them, **they must be excluded from the index.** Indexing massive text blocks adds massive write-overhead for absolutely zero benefit.
+
+**Database Configuration (JSON):**
+```json
+{
+  "indexingMode": "consistent",
+  "includedPaths": [
+    { "path": "/title/?" },
+    { "path": "/documentType/?" },
+    { "path": "/category/?" },
+    { "path": "/uploadDate/?" }
+  ],
+  "excludedPaths": [
+    { "path": "/*" }
+  ],
+  "vectorIndexes": [
+    { "path": "/embedding", "type": "diskANN" }
+  ]
+}
+```
+*Notice that `content`, `summary`, and `rawMetadata` are intentionally left out of the `includedPaths`.*
+
+---
+
+## 4. The Partition Key Trap
+
+If you decide to use the "Exclude Everything" strategy (`"excludedPaths": [ { "path": "/*" } ]`) to save storage, you must be extremely careful.
+
+<Callout type="warn" title="Crucial Gotcha: The Partition Key">
+Cosmos DB does **NOT** automatically index your partition key if you use the exclude-by-default strategy. If your partition key is `/tenantId`, and you write a query like `WHERE c.tenantId = '123'`, the database will perform a full scan inside that partition!
+</Callout>
+
+**Database Configuration (JSON):**
+```json
+{
+  "includedPaths": [
+    { "path": "/tenantId/?" }, // <-- You MUST manually add the partition key here!
+    { "path": "/status/?" }
+  ],
+  "excludedPaths": [
+    { "path": "/*" }
+  ]
+}
+```
+
+---
+
+## 5. Composite Index Limits
+
+Composite indexes drastically lower read costs for complex queries, but they maintain a heavy penalty: **each composite index increases write latency and write RU consumption.** 
+
+You should only create the **five to ten most impactful** composite indexes for your workload. Do not create dozens of composite indexes to satisfy rare edge-case queries.
+
+**Database Configuration (JSON):**
+```json
+{
+  "compositeIndexes": [
+    [
+      { "path": "/documentType", "order": "ascending" },
+      { "path": "/uploadDate", "order": "descending" }
+    ],
+    [
+      { "path": "/category", "order": "ascending" },
+      { "path": "/department", "order": "ascending" },
+      { "path": "/uploadDate", "order": "descending" }
+    ]
+  ]
+}
+```
+
+---
+
+## 6. Write-Heavy vs Read-Heavy Optimization
+
+Your application's overall workload profile dictates your fundamental indexing strategy.
+
+<Mermaid chart={`
+flowchart LR
+    Workload["Application Workload"]
+    
+    Workload -->|"Read-Heavy"| Read["Search, Analytics, AI"]
+    Read --> Max["Maximize Indexes"]
+    Max --> RHigh["High Write RU (Acceptable penalty)"]
+    Max --> RLow["Low Query RU (Crucial savings across millions of reads)"]
+    
+    Workload -->|"Write-Heavy"| Write["Ingestion, Data Streaming"]
+    Write --> Min["Minimize Indexes"]
+    Min --> WLow["Low Write RU (Crucial for high ingestion volume)"]
+    Min --> WHigh["High Query RU (Acceptable for rare queries)"]
+`} />
+
+*Note: Most AI applications are heavily Read-Heavy, meaning you should invest in comprehensive indexing.*
+
+---
+
+## 7. Safe Index Swapping
+
+When you modify an indexing policy, Azure Cosmos DB performs an asynchronous background transformation. 
+* New indexes do not improve performance until the transformation completes.
+* If you remove an index, queries **immediately** stop using it and fall back to scans.
+
+<Callout type="info" title="Zero-Downtime Rule">
+If you want to replace an old index configuration with a new one: **Add the new index first**, wait for the transformation to fully complete, and *then* remove the old index. This ensures queries never temporarily drop into full-scan mode.
+</Callout>
+
+**Checking Transformation Progress (Python):**
+```python
+# Check indexing progress through container properties
+container_properties = container.read()
+indexing_policy = container_properties.get("indexingPolicy", {})
+
+# Note: Real-time percentage progress is only visible in the Azure Portal or Azure CLI.
+```
+
+---
+
+## 8. Test RU Consumption with Realistic Data
+
+<Callout type="warn" title="The Danger of Synthetic Data">
+Never test RU consumption with perfectly balanced, synthetic "dummy" data. 
+</Callout>
+
+In production, data cardinality is often heavily skewed (e.g., 90% of your documents might sit in a single "Archived" category). If you test an index against evenly distributed test data, your RU consumption estimates will be completely wrong. Always load realistic, skewed data to measure actual index performance before pushing to production.

@@ -25,3 +25,17 @@ You may use the experimental `architecture-beta` syntax for simple, linear, poin
 There is **no limit** to the number of diagrams you can place on a single page. 
 - You should proactively insert diagrams *anywhere* a complex concept, architecture, or workflow is being introduced.
 - If a diagram makes the content easier to grasp, understand, or visualize for the reader, add it immediately—do not hesitate to use multiple diagrams throughout a document to break down different parts of a complex system.
+
+## 4. Strict MDX Safety for Mermaid in Fumadocs
+When placing Mermaid diagrams inside `.mdx` files, the Javascript parser (Acorn) can crash and break the Next.js dev server if strings and brackets aren't escaped properly.
+Follow these strict rules:
+
+1. **Backticks for the Chart Prop:**
+   You MUST wrap the chart string in backticks, NEVER single quotes.
+   - **Correct:** `<Mermaid chart={\` \n flowchart TD \n \`} />`
+   - **Incorrect (Will Crash):** `<Mermaid chart={' \n flowchart TD \n '} />`
+
+2. **Quote ALL Labels:**
+   You MUST wrap all node labels AND edge labels containing spaces or special characters (like `[]` or `/*`) entirely in double quotes. 
+   - **Correct:** `Root -->|"Path: /visitedCities/[]"| Arr["Array Unpacking"]`
+   - **Incorrect (Will Crash):** `Root -->|Path: /visitedCities/[]| Arr[Array Unpacking]`
